@@ -1,0 +1,347 @@
+<Window x:Class="HachBobAI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HachBobAI.UI"
+        xmlns:conv="clr-namespace:HachBobAI"
+        Title="ХАЧБОБ AI V8 — C#" Height="860" Width="920"
+        MinHeight="500" MinWidth="700"
+        Background="#0A0A0A" Topmost="True"
+        WindowStyle="SingleBorderWindow">
+
+    <Window.Resources>
+        <conv:InverseBoolConverter x:Key="InverseBool"/>
+        <Style TargetType="Label" x:Key="SideLabel">
+            <Setter Property="Foreground" Value="#AAAAAA"/>
+            <Setter Property="FontFamily" Value="Arial"/>
+            <Setter Property="FontSize" Value="9"/>
+        </Style>
+
+        <Style TargetType="TabItem">
+            <Setter Property="Background" Value="#111111"/>
+            <Setter Property="Foreground" Value="#AAAAAA"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <Style TargetType="Slider">
+            <Setter Property="Foreground" Value="#3A7BD5"/>
+            <Setter Property="Background" Value="#1A3A60"/>
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,2"/>
+        </Style>
+
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#1A1A3A"/>
+            <Setter Property="Foreground" Value="#8888FF"/>
+            <Setter Property="BorderBrush" Value="#3A3A7A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#0D1A2A"/>
+            <Setter Property="Foreground" Value="#4488FF"/>
+            <Setter Property="BorderBrush" Value="#2A4A70"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="180"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ═══ SIDEBAR ═══ -->
+        <Border Grid.Column="0" Background="#111111">
+            <StackPanel Margin="8">
+
+                <!-- Logo / Title -->
+                <Label Content="HACHBOB" Foreground="#FF4B4B"
+                       FontFamily="Arial Black" FontSize="20" HorizontalAlignment="Center" Margin="0,12,0,2"/>
+                <Label Content="AI V8  [C#]" Foreground="#FF4B4B"
+                       FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,6"/>
+
+                <Label x:Name="StatusLabel" Content="ACTIVE" Foreground="#00FF9D"
+                       FontFamily="Arial" FontSize="14" FontWeight="Bold"
+                       HorizontalAlignment="Center" Margin="0,0,0,8"/>
+
+                <!-- Y Offset display -->
+                <Label Content="Y-СМЕЩЕНИЕ" Foreground="#555" FontSize="8" FontWeight="Bold"
+                       HorizontalAlignment="Center"/>
+                <Label x:Name="YOffsetLabel" Content="● +0 px" Foreground="#00CC66"
+                       FontFamily="Consolas" FontSize="12" FontWeight="Bold"
+                       HorizontalAlignment="Center" Margin="0,0,0,4"/>
+
+                <Separator Background="#222" Margin="8,4"/>
+
+                <Label Content="ПРЕСЕТ" Foreground="#444" FontSize="9" FontWeight="Bold"
+                       HorizontalAlignment="Center"/>
+                <Label x:Name="ActivePresetLabel" Content="—" Foreground="#FF8C00"
+                       FontFamily="Consolas" FontSize="12" FontWeight="Bold"
+                       HorizontalAlignment="Center" Margin="0,0,0,4"/>
+
+                <!-- Preset buttons -->
+                <StackPanel x:Name="PresetPanel"/>
+
+                <Separator Background="#222" Margin="8,8"/>
+
+                <!-- Hotkey hints -->
+                <Grid Margin="4,2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="40"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                    </Grid.RowDefinitions>
+                    <Label Content="INS"  Grid.Row="0" Grid.Column="0" Foreground="#FF4B4B" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+                    <Label Content="вкл/выкл"  Grid.Row="0" Grid.Column="1" Foreground="#555" FontSize="9"/>
+                    <Label Content="HOME" Grid.Row="1" Grid.Column="0" Foreground="#FF4B4B" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+                    <Label Content="скрыть GUI" Grid.Row="1" Grid.Column="1" Foreground="#555" FontSize="9"/>
+                    <Label Content="V"    Grid.Row="2" Grid.Column="0" Foreground="#FF4B4B" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+                    <Label Content="dead zone"  Grid.Row="2" Grid.Column="1" Foreground="#555" FontSize="9"/>
+                    <Label Content="F12"  Grid.Row="3" Grid.Column="0" Foreground="#FF4B4B" FontFamily="Consolas" FontSize="9" FontWeight="Bold"/>
+                    <Label Content="выход"      Grid.Row="3" Grid.Column="1" Foreground="#555" FontSize="9"/>
+                </Grid>
+
+                <!-- FPS display -->
+                <Label x:Name="FpsLabel" Content="0 FPS" Foreground="#4488AA"
+                       FontFamily="Consolas" FontSize="10" HorizontalAlignment="Center" Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ MAIN TABS ═══ -->
+        <TabControl Grid.Column="1" Background="#0A0A0A" BorderThickness="0" Margin="0,8,8,8">
+
+            <!-- ── TAB: AIM ── -->
+            <TabItem Header="⚙ Аим">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16,8">
+
+                        <Label Content="⚙  VISION / YOLO" Foreground="#4488FF"
+                               FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
+
+                        <Border Background="#0E1620" BorderBrush="#1E3050" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                            <StackPanel>
+                                <WrapPanel Margin="0,0,0,8">
+                                    <CheckBox x:Name="VisionEnabledCheck" Content="Включить YOLO"
+                                              IsChecked="{Binding VisionCfg.Enabled}"
+                                              Checked="OnVisionEnabledChanged" Unchecked="OnVisionEnabledChanged" Margin="0,0,16,0"/>
+                                    <CheckBox x:Name="ShowFovCheck" Content="Показать FOV"
+                                              IsChecked="{Binding VisionCfg.ShowFov}"
+                                              Checked="OnShowFovChanged" Unchecked="OnShowFovChanged" Margin="0,0,16,0"/>
+                                    <CheckBox Content="FP16" IsChecked="{Binding VisionCfg.UseFp16}" Foreground="#FF8C00" Margin="0,0,16,0"/>
+                                    <CheckBox Content="NUMA pinning" IsChecked="{Binding VisionCfg.NumaPinning}"
+                                              Foreground="#AA44FF"
+                                              ToolTip="Включать ТОЛЬКО на Dual Xeon / многосокетных серверах!&#10;На обычном ПК с одним CPU вызывает лаги и -100 FPS."/>
+                                </WrapPanel>
+
+                                <!-- Провайдер + Перезапуск -->
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Провайдер (GPU)" Foreground="#AAAAAA"
+                                               FontSize="11" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="ProviderCombo" Grid.Column="1"
+                                              Background="#0D1A2A" Foreground="#4488FF"
+                                              BorderBrush="#2A4A70" FontFamily="Consolas" FontSize="11"
+                                              SelectionChanged="OnProviderChanged">
+                                        <ComboBoxItem Content="tensorrt"     Tag="tensorrt"     ToolTip="NVIDIA GPU — TensorRT (быстрее всего, нужен CUDA+cuDNN)"/>
+                                        <ComboBoxItem Content="cuda"         Tag="cuda"         ToolTip="NVIDIA GPU — CUDA без TRT кэша"/>
+                                        <ComboBoxItem Content="directml"     Tag="directml"     ToolTip="AMD/Intel/NVIDIA — DirectML (универсальный GPU)"/>
+                                        <ComboBoxItem Content="openvino"     Tag="openvino"     ToolTip="Intel CPU/iGPU — OpenVINO EP (аналог TRT для Intel)"/>
+                                        <ComboBoxItem Content="cpu_optimized" Tag="cpu_optimized" ToolTip="CPU — максимум потоков + Arena allocator"/>
+                                        <ComboBoxItem Content="cpu"          Tag="cpu"          ToolTip="CPU — стандартный режим"/>
+                                    </ComboBox>
+                                    <Button Grid.Column="2" Content="↺ Рестарт" Margin="6,0,0,0"
+                                            Click="OnRestartVision" Height="24" FontSize="10"
+                                            Background="#0A1A0A" Foreground="#00CC66"
+                                            BorderBrush="#00CC66" BorderThickness="1" Padding="6,2"/>
+                                </Grid>
+
+                                <!-- Путь к модели -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Модель (.onnx)" Foreground="#AAAAAA"
+                                               FontSize="11" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="ModelPathBox" Grid.Column="1"
+                                             Text="{Binding VisionCfg.ModelPath, UpdateSourceTrigger=PropertyChanged}"
+                                             FontSize="10" Height="24" VerticalContentAlignment="Center"/>
+                                    <Button Grid.Column="2" Content="📂" Margin="4,0,0,0"
+                                            Click="OnBrowseModel" Height="24" Width="28" FontSize="12" Padding="0"/>
+                                </Grid>
+
+                                <!-- Sliders -->
+                                <local:SliderRow Label="FOV радиус"          Value="{Binding VisionCfg.FovRadius}" Min="80"  Max="600" Format="F0"  Unit="px"    ValueChanged="OnFovChanged"/>
+
+                                <!-- Режим захвата -->
+                                <WrapPanel Margin="0,4,0,6">
+                                    <TextBlock Text="Режим захвата:" Foreground="#AAAAAA" FontSize="11"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <RadioButton x:Name="ModeSquish" Content="Сжатие" GroupName="CaptureMode"
+                                                 IsChecked="{Binding VisionCfg.UseTiled, Converter={StaticResource InverseBool}}"
+                                                 Foreground="#AAAAAA" FontSize="11" Margin="0,0,12,0"
+                                                 Checked="OnCaptureModeChanged"
+                                                 ToolTip="Весь capture сжимается до размера модели. Быстро, подходит для большинства."/>
+                                    <RadioButton x:Name="ModeTiled" Content="Тайлы (мощный GPU)" GroupName="CaptureMode"
+                                                 IsChecked="{Binding VisionCfg.UseTiled}"
+                                                 Foreground="#FF8C00" FontSize="11"
+                                                 Checked="OnCaptureModeChanged"
+                                                 ToolTip="Capture делится на тайлы по размеру модели. Лучше качество на дальних целях, но нагружает GPU."/>
+                                </WrapPanel>
+
+                                <!-- Capture size — виден только в режиме тайлов -->
+                                <local:SliderRow x:Name="CaptureSizeRow"
+                                                 Label="Зона захвата" Value="{Binding VisionCfg.CaptureSize}"
+                                                 Min="64" Max="1664" Format="F0" Unit="px"
+                                                 ValueChanged="OnCaptureSizeChanged"
+                                                 ToolTip="Сжатие: 320–640px оптимально. Тайлы (модель 416px): 416=1×1, 832=2×2, 1248=3×3, 1664=4×4."/>
+                                <TextBlock x:Name="CaptureSizeHint" FontSize="10" Margin="0,-2,0,6"
+                                           Foreground="#666666" FontFamily="Consolas"
+                                           Text="💡 Сжатие: рекомендуется 320–640 px"/>
+                                <local:SliderRow Label="Уверенность"          Value="{Binding VisionCfg.Conf}"      Min="0.1" Max="0.9" Format="F2"             ValueChanged="OnConfChanged"/>
+                                <local:SliderRow Label="Сила наведения"       Value="{Binding VisionCfg.Strength}"  Min="0.03" Max="0.5" Format="F3"            ValueChanged="OnStrengthChanged"/>
+                                <local:SliderRow Label="Макс. шаг (px/тик)"  Value="{Binding VisionCfg.MaxStep}"   Min="2"   Max="60"  Format="F0"  Unit="px"   ValueChanged="OnMaxStepChanged"/>
+                                <local:SliderRow Label="Плавность наведения"  Value="{Binding VisionCfg.Smooth}"    Min="0" Max="1.0" Format="F2"            ValueChanged="OnSmoothChanged"/>
+                                <local:SliderRow Label="Предикция движения"   Value="{Binding VisionCfg.Prediction}" Min="0" Max="1.5" Format="F2" Unit="x"     ValueChanged="OnPredictionChanged"/>
+                                <local:SliderRow Label="Точка прицела ↑↓"    Value="{Binding VisionCfg.AimYOffset}" Min="-100" Max="100" Format="+0;-0;0" Unit="px" ValueChanged="OnAimYOffsetChanged"/>
+                                <local:SliderRow Label="Стоп-зона у цели"    Value="{Binding VisionCfg.StopDist}"   Min="0.5" Max="20" Format="F1" Unit="px"    ValueChanged="OnStopDistChanged"/>
+                                <local:SliderRow Label="Подтверждение кадров" Value="{Binding VisionCfg.ConfirmFrames}" Min="0" Max="15" Format="F0" Unit="кадр" ValueChanged="OnConfirmFramesChanged"/>
+
+                                <Separator Background="#1E3050" Margin="0,8"/>
+
+                                <CheckBox x:Name="DeadZoneCheck" Content="Мёртвые зоны"
+                                          IsChecked="{Binding VisionCfg.DeadZone}"
+                                          Checked="OnDeadZoneEnabledChanged" Unchecked="OnDeadZoneEnabledChanged"
+                                          Foreground="#FF3300" Margin="0,4"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Settings -->
+                        <Label Content="НАСТРОЙКИ" Foreground="#4488FF" FontSize="13" FontWeight="Bold" Margin="0,12,0,4"/>
+                        <Border Background="#0E0E0E" BorderBrush="#222" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                            <StackPanel>
+                                <local:SliderRow Label="Громкость"           Value="{Binding _cfg.Volume}"        Min="0" Max="100" Format="F0" Unit="%"/>
+                                <local:SliderRow Label="Прозрачность индик." Value="{Binding _cfg.IndicatorAlpha}" Min="0.1" Max="1.0" Format="F2" ValueChanged="OnIndicatorAlphaChanged"/>
+                                <CheckBox Content="Toggle Mode (xbutton2 как переключатель)"
+                                          IsChecked="{Binding _cfg.ToggleMode}" Margin="0,4,0,8"/>
+
+                                <!-- Позиция индикатора -->
+                                <Separator Background="#222" Margin="0,0,0,8"/>
+                                <Label Content="ПОЗИЦИЯ ИНДИКАТОРА" Foreground="#555" FontSize="9" FontWeight="Bold" Padding="0,0,0,4"/>
+                                <CheckBox x:Name="IndEnabledCheck" Content="Показывать индикатор"
+                                          Foreground="#AAAAAA" Margin="0,0,0,6"
+                                          Checked="OnIndicatorEnabledChanged"
+                                          Unchecked="OnIndicatorEnabledChanged"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="0,0,8,0">
+                                        <TextBlock Text="X:" Foreground="#AAAAAA" FontFamily="Consolas" FontSize="12"
+                                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBox x:Name="IndXBox" Width="70" FontFamily="Consolas" FontSize="12"
+                                                 LostFocus="OnIndicatorPosChanged" KeyDown="OnIndicatorPosKeyDown"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                        <TextBlock Text="Y:" Foreground="#AAAAAA" FontFamily="Consolas" FontSize="12"
+                                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <TextBox x:Name="IndYBox" Width="70" FontFamily="Consolas" FontSize="12"
+                                                 LostFocus="OnIndicatorPosChanged" KeyDown="OnIndicatorPosKeyDown"/>
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Button Content="СОХРАНИТЬ" Click="SaveButton_Click"
+                                Height="44" Margin="0,12,0,0"
+                                Background="#FF4B4B" Foreground="White"
+                                BorderThickness="0" FontSize="14" FontWeight="Bold"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── TAB: TRIGGER ── -->
+            <TabItem Header="🎯 Триггер">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16,8">
+                        <Label Content="🎯  ТРИГЕРБОТ" Foreground="#4488FF" FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <Border Background="#0E1A10" BorderBrush="#1E4030" BorderThickness="1" CornerRadius="6" Padding="12,10">
+                            <StackPanel>
+                                <CheckBox x:Name="TbEnabledCheck" Content="Включить тригербот"
+                                          IsChecked="{Binding TbCfg.Enabled}"
+                                          Checked="OnTbEnabledChanged" Unchecked="OnTbEnabledChanged"
+                                          Foreground="#00CC66" Margin="0,0,0,8"/>
+
+                                <local:SliderRow Label="Радиус триггера"    Value="{Binding TbCfg.Tolerance}" Min="1" Max="200" Format="F0" Unit="px"  ValueChanged="OnTbToleranceChanged"/>
+                                <local:SliderRow Label="Задержка мин (мс)"  Value="{Binding TbCfg.DelayMin}"  Min="0" Max="200" Format="F0" Unit="мс"  ValueChanged="OnTbDelayMinChanged"/>
+                                <local:SliderRow Label="Задержка макс (мс)" Value="{Binding TbCfg.DelayMax}"  Min="0" Max="400" Format="F0" Unit="мс"  ValueChanged="OnTbDelayMaxChanged"/>
+
+                                <CheckBox Content="Только при зажатом аиме"
+                                          IsChecked="{Binding TbCfg.AimOnly}"
+                                          Foreground="#0099CC" Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── TAB: PRESETS ── -->
+            <TabItem Header="🔫 Пресеты">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16,8">
+                        <Label Content="🔫  ПРЕСЕТЫ ОРУЖИЙ" Foreground="#4488FF" FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <local:PresetsPanel x:Name="PresetsControl"
+                                            ActiveIndex="{Binding ActivePresetIndex}"
+                                            OnApply="OnPresetActivate"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── TAB: DEAD ZONES ── -->
+            <TabItem Header="🚫 Зоны">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16,8">
+                        <Label Content="🚫  МЁРТВЫЕ ЗОНЫ" Foreground="#4488FF" FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <local:DeadZonesPanel x:Name="DeadZonesControl"
+                                              ZoneChanged="OnDeadZonesChanged"
+                                              GroupSwitched="OnDeadZoneGroupSwitched"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ── TAB: BINDS ── -->
+            <TabItem Header="⌨ Бинды">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="16,8">
+                        <Label Content="⌨  БИНДЫ" Foreground="#4488FF" FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <local:BindsPanel x:Name="BindsControl"
+                                          Binds="{Binding Binds}"
+                                          BindChanged="OnBindChanged"/>
+                        <Button Content="СОХРАНИТЬ" Click="SaveButton_Click"
+                                Height="44" Margin="0,16,0,0"
+                                Background="#FF4B4B" Foreground="White"
+                                BorderThickness="0" FontSize="14" FontWeight="Bold"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+    </Grid>
+</Window>
