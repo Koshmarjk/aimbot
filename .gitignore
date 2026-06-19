@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+ReleaseBuilds/
+
+# ONNX models (большие + приватные)
+*.onnx
+models/
+*.bin
+
+# OpenVINO IR
+*.xml
+
+# Кеши
+ov_cache/
+trt_cache/
+
+# Логи
+*.log
+debug.log
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Персональные настройки пользователя
+config.json
+presets.json
