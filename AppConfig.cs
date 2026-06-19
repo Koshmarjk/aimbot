@@ -7,6 +7,7 @@ namespace HachBobAI.Config;
 
 public class VisionConfig
 {
+    [JsonPropertyName("dml_device_id")]  public int DmlDeviceId      { get; set; } = 0;
     [JsonPropertyName("enabled")]        public bool   Enabled       { get; set; } = true;
     [JsonPropertyName("model_path")]     public string ModelPath     { get; set; } = "C:\\Users\\kosta\\OneDrive\\Desktop\\bot\\models\\model_nano_416_op12_v2.onnx";
     [JsonPropertyName("fov_radius")]     public int    FovRadius     { get; set; } = 300;
@@ -25,6 +26,7 @@ public class VisionConfig
     [JsonPropertyName("aim_y_offset")]   public double AimYOffset    { get; set; } = 0.0;
     [JsonPropertyName("confirm_frames")] public int    ConfirmFrames { get; set; } = 3;
     [JsonPropertyName("priority_size")]  public bool   PrioritySize  { get; set; } = true;
+    [JsonPropertyName("ghost_max_frames")] public int  GhostMaxFrames { get; set; } = 10;
     [JsonPropertyName("aim_hz")]         public int    AimHz         { get; set; } = 0;
     [JsonPropertyName("dead_zone")]      public bool   DeadZone      { get; set; } = true;
     // NUMA-пиннинг — включать только на Dual Xeon / многосокетных серверах.

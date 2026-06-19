@@ -63,6 +63,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _cfg     = ConfigManager.Load();
         _presets = ConfigManager.LoadPresets() ?? _cfg.Presets;
+        // ★ Восстанавливаем активный пресет из конфига
+        _activePreset = _cfg.ActivePreset;
+        if (_activePreset >= _presets.Count) _activePreset = -1;
 
         ApplyConfigToUi();
         InitVision();
@@ -143,7 +146,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             int sh = (int)SystemParameters.PrimaryScreenHeight;
             _vision = new VisionEngine(vs.ModelPath, sw, sh,
                 (float)vs.Conf, vs.FovRadius, vs.Provider, vs.CaptureSize, vs.UseFp16,
-                vs.NumaPinning, vs.NumaCores);
+                vs.NumaPinning, vs.NumaCores,
+                vs.DmlDeviceId);
             _vision.AimYOffsetPx    = (float)vs.AimYOffset;
             _vision.PredictionStr   = (float)vs.Prediction;
             _vision.ConfirmFrames   = vs.ConfirmFrames;
@@ -151,6 +155,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _vision.DeadZoneEnabled = vs.DeadZone;
             _vision.DeadZones       = _cfg.CurrentZones.Select(d => new DeadZone(d)).ToList();
             _vision.PrioritySize    = vs.PrioritySize;
+            _vision.GhostMaxFrames  = vs.GhostMaxFrames;
             _vision.AimHz           = vs.AimHz;
             _vision.UseTiled        = vs.UseTiled;
             _vision.TileOverlap     = vs.TileOverlap;
@@ -273,7 +278,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _mouse.OnExit        = () => Dispatcher.Invoke(DoExit);
 
         if (_activePreset >= 0 && _activePreset < _presets.Count)
-            ApplyPreset(_activePreset);
+        {
+            int saved = _activePreset;
+            _activePreset = -1; // временно сбрасываем, иначе ApplyPreset его выключит
+            ApplyPreset(saved);
+        }
 
         _mouse.Start();
     }
@@ -319,7 +328,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         string bind = _activePreset >= 0 && _activePreset < _presets.Count
             ? (_presets[_activePreset].Bind?.ToUpper() ?? "") : "";
-
+        // FPS display
+        if (_vision != null)
+            FpsLabel.Content = $"{_vision.Fps:F0} FPS  [{_vision.ProviderName}]";
+        else
+        {
+            System.IO.File.AppendAllText("debug.log",
+                $"{DateTime.Now:HH:mm:ss} [POLL] _vision is NULL\n");
+        }
         // ★ Обновляем если изменился state ИЛИ пресет
         if (state != _lastIndState || preset != _lastIndPreset)
         {
@@ -416,7 +432,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _mouse.RfSetTable(p.Rangefinder, true, true);
         else
             _mouse.RfSetTable([], false);
-        _mouse.RfBaseYOffset = (float)p.AimYOffset;
+        _mouse.RfBaseYOffset = 0;
 
         RefreshPresetSidebar();
         // Точечно уведомляем биндинги — без DataContext=null который стреляет ValueChanged с 0

@@ -138,6 +138,7 @@ public sealed class DXGICapture : IScreenCapture
     private uint   _stagingW, _stagingH;
     private bool   _disposed;
     private int    _stagingFailCount;
+    private int    _lostBackoffMs = 200;
 
     public string ProviderName => "DXGI";
 
@@ -224,18 +225,23 @@ public sealed class DXGICapture : IScreenCapture
         // DXGI_ERROR_DEVICE_REMOVED (0x887A0005) или DXGI_ERROR_ACCESS_LOST (0x887A0026)
         if (hr == unchecked((int)0x887A0005) || hr == unchecked((int)0x887A0026))
         {
-            _stagingFailCount++;
-            if (_stagingFailCount == 1 || _stagingFailCount % 100 == 0)
-                Console.WriteLine($"[capture] Device lost (x{_stagingFailCount}), reinitializing...");
-            Thread.Sleep(200);
-            try { Reinit(); _stagingFailCount = 0; }
-            catch (Exception ex)
-            {
-                if (_stagingFailCount % 100 == 0)
-                    Console.WriteLine($"[capture] Reinit failed: {ex.Message}");
-            }
-            return false;
-        }
+                    _stagingFailCount++;
+                        if (_stagingFailCount == 1 || _stagingFailCount % 10 == 0)
+                            Console.WriteLine($"[capture] Device lost (x{_stagingFailCount}), backoff={_lostBackoffMs}ms...");
+                        Thread.Sleep(_lostBackoffMs);
+                        try { Reinit(); _stagingFailCount = 0; _lostBackoffMs = 200; }
+                        catch (Exception ex)
+                        {
+                            _lostBackoffMs = Math.Min(_lostBackoffMs * 2, 5000);
+                            if (_stagingFailCount % 10 == 0)
+                                Console.WriteLine($"[capture] Reinit failed: {ex.Message}");
+                        }
+                        return false;
+                    }
+                    else
+                    {
+                        _lostBackoffMs = 200;
+                    }
 
         if (hr < 0) return false;  // timeout or mode change
 
@@ -265,16 +271,21 @@ public sealed class DXGICapture : IScreenCapture
             {
                 byte* src  = (byte*)mapped.pData;
                 int   rowPitch = (int)mapped.RowPitch;
-                int   dstIdx = 0;
-                for (int row = 0; row < height; row++)
+                fixed (byte* pDst = dst)
                 {
-                    byte* rowPtr = src + row * rowPitch;
-                    for (int col = 0; col < width; col++)
+                    byte* d = pDst;
+                    for (int row = 0; row < height; row++)
                     {
-                        // BGRA → BGR (drop A)
-                        dst[dstIdx++] = rowPtr[col * 4 + 0]; // B
-                        dst[dstIdx++] = rowPtr[col * 4 + 1]; // G
-                        dst[dstIdx++] = rowPtr[col * 4 + 2]; // R
+                        byte* s = src + row * rowPitch;
+                        byte* end = s + width * 4;
+                        while (s < end)
+                        {
+                            d[0] = s[0]; // B
+                            d[1] = s[1]; // G
+                            d[2] = s[2]; // R
+                            d += 3;
+                            s += 4;
+                        }
                     }
                 }
             }

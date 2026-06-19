@@ -214,6 +214,8 @@ public partial class PresetsPanel : UserControl
 
     private void StartBindCapture(int idx, Button btn)
     {
+        if (_captureIdx >= 0)
+            Window.GetWindow(this)?.RemoveHandler(KeyDownEvent, (KeyEventHandler)OnCaptureKey);
         _captureIdx = idx;
         _captureBtn = btn;
         btn.Content = "...";

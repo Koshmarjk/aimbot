@@ -6,7 +6,7 @@
 //
 // После добавления: dotnet restore
 // ─────────────────────────────────────────────────────────────────────────────
-
+#if USE_OPENVINO
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -16,9 +16,8 @@ namespace HachBobAI.Vision;
 
 public sealed class OpenVinoSession : IDisposable
 {
-    // ── Win32 NUMA-пиннинг ────────────────────────────────────────────────────
+    // ── Win32: HIGH priority (NUMA delegated to OpenVINO) ──────────────────────
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll")] private static extern bool   SetProcessAffinityMask(IntPtr h, UIntPtr mask);
     [DllImport("kernel32.dll")] private static extern bool   SetPriorityClass(IntPtr h, uint cls);
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
     [DllImport("kernel32.dll")] private static extern bool   SetThreadPriority(IntPtr h, int pri);
@@ -61,7 +60,7 @@ public sealed class OpenVinoSession : IDisposable
             ["PERFORMANCE_HINT"]      = "LATENCY",
             ["NUM_STREAMS"]           = "1",
             ["INFERENCE_NUM_THREADS"] = halfCores.ToString(),
-            ["ENABLE_CPU_PINNING"]    = "YES",
+            ["ENABLE_CPU_PINNING"]    = numaPinning ? "NUMA" : "NO",
             ["CACHE_DIR"]             = Path.GetFullPath(cacheDir),
         };
 
@@ -120,17 +119,9 @@ public sealed class OpenVinoSession : IDisposable
         {
             var h = GetCurrentProcess();
             SetPriorityClass(h, HIGH_PRIORITY_CLASS);
-
-            if (enabled)
-            {
-                ulong mask = (1UL << halfCores) - 1UL;
-                SetProcessAffinityMask(h, (UIntPtr)mask);
-                Console.WriteLine($"[ov] NUMA pinning ON: Socket 0, {halfCores} ядер, mask=0x{mask:X}");
-            }
-            else
-            {
-                Console.WriteLine($"[ov] NUMA pinning OFF: HIGH priority, все {Environment.ProcessorCount} ядер");
-            }
+            // SetProcessAffinityMask удалён — ломал DXGI на Dual Xeon
+            // OpenVINO сам привяжет потоки через ENABLE_CPU_PINNING=NUMA
+            Console.WriteLine("[ov] Priority: HIGH. Thread pinning delegated to OpenVINO.");
         }
         catch (Exception e) { Console.WriteLine($"[ov] NUMA pinning: {e.Message}"); }
     }
@@ -270,3 +261,4 @@ public sealed class OpenVinoSession : IDisposable
 // Провайдеры для активации OpenVinoSession: "openvino_native", "openvino_xml",
 // или "openvino" при передаче .xml пути модели.
 // ─────────────────────────────────────────────────────────────────────────────
+#endif

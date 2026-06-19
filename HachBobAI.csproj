@@ -1,60 +1,79 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <UseWPF>true</UseWPF>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <RootNamespace>HachBobAI</RootNamespace>
-    <AssemblyName>HachBobAI</AssemblyName>
-    <Optimize>true</Optimize>
-    <PlatformTarget>x64</PlatformTarget>
-  </PropertyGroup>
 
-  <ItemGroup>
-    <!--
-      Один пакет — все провайдеры: CUDA, TensorRT, DirectML, CPU
-      Переключение прямо в GUI без перекомпиляции
-      Для CUDA/TensorRT нужен CUDA Toolkit 12.x + cuDNN 9.x
-    -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.20.1"/>
+	<PropertyGroup>
+		<DefineConstants Condition="'$(Configuration)' == 'Release_OpenVINO'">$(DefineConstants);USE_OPENVINO</DefineConstants>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWPF>true</UseWPF>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<RootNamespace>HachBobAI</RootNamespace>
+		<AssemblyName>HachBobAI</AssemblyName>
+		<Optimize>true</Optimize>
+		<PlatformTarget>x64</PlatformTarget>
 
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Extensions" Version="0.13.0" Condition="false"/>
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+		<CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
+		<CopyDocumentationFilesFromPackages>false</CopyDocumentationFilesFromPackages>
 
-    <!-- Глобальный хук мыши/клавиатуры -->
-    <PackageReference Include="SharpHook" Version="5.3.7"/>
+		<!-- Только нужные языки (убирает кучу локализаций) -->
+		<SatelliteResourceLanguages>en;ru</SatelliteResourceLanguages>
 
-    <!-- Аудио -->
-    <PackageReference Include="NAudio" Version="2.2.1"/>
+		<DefaultItemExcludes>$(DefaultItemExcludes);x\**;lod\**;improved\**;uploads\**;**\*_copy.cs;cache.json;ov_cache\**;trt_cache\**</DefaultItemExcludes>
+	</PropertyGroup>
 
-    <!--
-      ═══════════════════════════════════════════════════════════
-      OpenVINO Native C# SDK — нативный inference без ORT
-      ═══════════════════════════════════════════════════════════
-      OpenVINO.CSharp.API   — C# обёртка (namespace OpenVinoSharp)
-                              Классы: Core, Model, CompiledModel,
-                                      InferRequest, Tensor
-      OpenVINO.runtime.win  — нативные dll (openvino.dll и др.)
-                              Автоматически копируются в output,
-                              PATH прописывать НЕ нужно.
+	<!-- ★ NVIDIA конфигурация (CUDA + TensorRT) -->
+	<ItemGroup Condition="'$(Configuration)' == 'Release_NVIDIA'">
+		<PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.20.1"/>
+	</ItemGroup>
 
-      Нужны для провайдеров: "openvino_native", "openvino_xml"
-      и "openvino" при передаче .xml файла модели.
-      ═══════════════════════════════════════════════════════════
-    -->
-    <PackageReference Include="OpenVINO.CSharp.API"  Version="2025.0.0.1"/>
-    <PackageReference Include="OpenVINO.runtime.win" Version="2024.4.0.1"/>
-  </ItemGroup>
+	<!-- ★ DML конфигурация (DirectML для AMD/Intel/NVIDIA) -->
+	<ItemGroup Condition="'$(Configuration)' == 'Release_DML'">
+		<PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1"/>
+	</ItemGroup>
 
-  <!-- Копировать config.json и presets.json в output при каждом билде -->
-  <ItemGroup>
-    <Content Include="config.json" Condition="Exists('config.json')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="presets.json" Condition="Exists('presets.json')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
+	<!-- ★ OpenVINO конфигурация (CPU + Intel iGPU/NPU) -->
+	<ItemGroup Condition="'$(Configuration)' == 'Release_OpenVINO'">
+		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1"/>
+		<PackageReference Include="OpenVINO.CSharp.API"  Version="2025.0.0.1"/>
+		<PackageReference Include="OpenVINO.runtime.win" Version="2024.4.0.1"/>
+	</ItemGroup>
+
+	<!-- ★ Fallback для Debug/Release (для разработки в IDE и WPF temp build) -->
+	<ItemGroup Condition="'$(Configuration)' != 'Release_NVIDIA' And '$(Configuration)' != 'Release_DML' And '$(Configuration)' != 'Release_OpenVINO'">
+		<PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1"/>
+	</ItemGroup>
+
+	<!-- ★ Общие пакеты во ВСЕХ конфигурациях -->
+	<ItemGroup>
+		<PackageReference Include="SharpHook" Version="5.3.7"/>
+		<PackageReference Include="NAudio" Version="2.2.1"/>
+	</ItemGroup>
+
+	<!-- ★ Исключаем OpenVinoSession.cs из сборок без OpenVINO -->
+	<ItemGroup Condition="'$(Configuration)' != 'Release_OpenVINO'">
+		<Compile Remove="Vision\OpenVinoSession.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Content Include="config.json" Condition="Exists('config.json')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="presets.json" Condition="Exists('presets.json')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+	<Target Name="CleanupPublish" AfterTargets="Publish">
+		<ItemGroup>
+			<FilesToDelete Include="$(PublishDir)**\*.lib" />
+			<FilesToDelete Include="$(PublishDir)**\*.pdb" />
+			<FilesToDelete Include="$(PublishDir)**\*.xml" />
+			<FilesToDelete Include="$(PublishDir)cache.json" />
+		</ItemGroup>
+		<Delete Files="@(FilesToDelete)" />
+	</Target>
 
 </Project>

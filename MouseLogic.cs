@@ -82,18 +82,22 @@ public sealed class MouseLogic : IDisposable
     private const uint MOUSEEVENTF_LUP   = 0x0004;
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
+    private static extern uint SendInput(uint nInputs, ref Input pInputs, int cbSize);
 
     [DllImport("winmm.dll")]
     private static extern uint timeBeginPeriod(uint uPeriod);
 
     private static readonly int InputSize = Marshal.SizeOf<Input>();
 
-    // ── EMA state ─────────────────────────────────────────────────────────────
-    private float _emaMx, _emaMy;
-    private bool  _emaActive;
+    // ── Smoothed speed state (anti-pendulum) ────────────────────────────────
+    // Раньше EMA сглаживала вектор движения — двухзвенная система → маятник.
+    // Потом сглаживали точку цели — без маятника, но наводка останавливалась вдалеке.
+    // Теперь сглаживаем только СКАЛЯР скорости; направление всегда к текущей цели.
+    private float _smoothSpeed;
+    private bool  _smoothActive;
     private readonly Random _rng = new();
     private const float HumanJitter = 0.35f;
+    private bool _ignoreNextLmbUp; // триггербот: фейковый LMB Up не сбрасывает аим
 
     // ── Hook ──────────────────────────────────────────────────────────────────
     private SimpleGlobalHook? _hook;
@@ -120,27 +124,28 @@ public sealed class MouseLogic : IDisposable
     private void MouseMove(int dx, int dy)
     {
         if (dx == 0 && dy == 0) return;
-        var inp = new Input[1];
-        inp[0].type       = 0;
-        inp[0].u.mi.dx    = dx;
-        inp[0].u.mi.dy    = dy;
-        inp[0].u.mi.dwFlags = MOUSEEVENTF_MOVE;
-        SendInput(1, inp, InputSize);
+        var inp = new Input();
+        inp.type          = 0;
+        inp.u.mi.dx      = dx;
+        inp.u.mi.dy      = dy;
+        inp.u.mi.dwFlags = MOUSEEVENTF_MOVE;
+        SendInput(1, ref inp, InputSize);
     }
 
     private void MouseClick()
     {
-        var down = new Input[1];
-        down[0].type         = 0;
-        down[0].u.mi.dwFlags = MOUSEEVENTF_LDOWN;
-        SendInput(1, down, InputSize);
+        _ignoreNextLmbUp = true;
+        var down = new Input();
+        down.type         = 0;
+        down.u.mi.dwFlags = MOUSEEVENTF_LDOWN;
+        SendInput(1, ref down, InputSize);
 
         Thread.Sleep(_rng.Next(10, 35));
 
-        var up = new Input[1];
-        up[0].type         = 0;
-        up[0].u.mi.dwFlags = MOUSEEVENTF_LUP;
-        SendInput(1, up, InputSize);
+        var up = new Input();
+        up.type         = 0;
+        up.u.mi.dwFlags = MOUSEEVENTF_LUP;
+        SendInput(1, ref up, InputSize);
     }
 
     // ── Aim Loop ──────────────────────────────────────────────────────────────
@@ -154,10 +159,11 @@ public sealed class MouseLogic : IDisposable
 
         while (!_cts.Token.IsCancellationRequested)
         {
-            if (!AimHeld || !Enabled || Vision == null || !Vision.IsReady()
-                || Vision.LastTarget == null)
+            var vision = Vision;
+            if (!AimHeld || !Enabled || vision == null || !vision.IsReady()
+                || !vision.TryGetAimSnapshot(out var aim) || aim.LastTarget == null)
             {
-                lastFid = -1; accumX = accumY = 0; _emaActive = false;
+                lastFid = -1; accumX = accumY = 0; _smoothActive = false;
                 Thread.Sleep(4); lastT = sw.Elapsed.TotalSeconds; continue;
             }
 
@@ -176,43 +182,81 @@ public sealed class MouseLogic : IDisposable
             }
             else
             {
-                int fid = Vision.FrameId;
+                int fid = aim.FrameId;
                 if (fid == lastFid) { Thread.Sleep(1); continue; }
                 lastFid = fid;
             }
             lastT = sw.Elapsed.TotalSeconds;
 
-            if (Vision.LastTarget == null)
-            { accumX = accumY = 0; _emaActive = false; continue; }
-
             RfUpdateFromTarget();
 
-            var (moveX, moveY) = Vision.GetAimDelta(Strength, MaxStep);
+            // Адаптивный strength: +0-40% в зависимости от скорости цели
+            float adaptiveStr = Strength;
+            float spd = aim.TargetSpeed;
+            if (spd > 50f) adaptiveStr *= 1.0f + MathF.Min(spd / 600f, 0.4f);
 
-            // Стоп-зона — сбрасываем аккумулятор
-            if (MathF.Abs(moveX) < 0.01f && MathF.Abs(moveY) < 0.01f)
-            { accumX = accumY = 0; _emaActive = false; continue; }
+            // --- Anti-pendulum: сглаживаем СКОРОСТЬ, а не точку цели и не вектор движения ---
+            // Раньше: EMA на moveX/moveY → маятник.
+            // Потом: EMA на точку цели → без маятника, но наводка останавливалась вдалеке от цели.
+            // Теперь: EMA на скаляр скорости, направление всегда к текущей предсказанной точке цели.
+            float rawAimX = vision.ScreenCx + aim.RawDx;
+            float rawAimY = vision.ScreenCy + aim.RawDy;
 
-            // EMA сглаживание — только если Smooth > 0
-            // При Smooth=0 — чистое пропорциональное наведение без инерции (нет маятника)
+            bool isGhost = aim.RealTarget == null && aim.LastTarget != null;
+
+            // Сырой шаг от Vision (учёт strength, maxStep, stopDist, smoothstep, ghost-ослабления)
+            var (rawMoveX, rawMoveY) = vision.GetAimDeltaForPoint(rawAimX, rawAimY, adaptiveStr, MaxStep, isGhost);
+            float rawSpeed = MathF.Sqrt(rawMoveX * rawMoveX + rawMoveY * rawMoveY);
+
+            float smoothSpeed;
             if (Smooth > 0.01f)
             {
-                if (!_emaActive) { _emaMx = moveX; _emaMy = moveY; _emaActive = true; }
+                if (!_smoothActive) { _smoothSpeed = rawSpeed; _smoothActive = true; }
+                else if (rawSpeed > _smoothSpeed * 1.01f)
+                {
+                    // Разгон — плавный, чтобы не было рывков
+                    _smoothSpeed = Smooth * rawSpeed + (1f - Smooth) * _smoothSpeed;
+                }
                 else
                 {
-                    _emaMx = Smooth * moveX + (1f - Smooth) * _emaMx;
-                    _emaMy = Smooth * moveY + (1f - Smooth) * _emaMy;
+                    // Торможение/догон к цели — быстрое, чтобы не замирать вблизи
+                    const float brakeSmooth = 0.8f;
+                    _smoothSpeed = brakeSmooth * rawSpeed + (1f - brakeSmooth) * _smoothSpeed;
                 }
-                // Сброс EMA при смене направления — убирает накопленный импульс
-                if (moveX * _emaMx < 0) { _emaMx = moveX; accumX = 0; }
-                if (moveY * _emaMy < 0) { _emaMy = moveY; accumY = 0; }
-                moveX = _emaMx; moveY = _emaMy;
+                smoothSpeed = _smoothSpeed;
             }
-            else { _emaActive = false; }
+            else
+            {
+                smoothSpeed = rawSpeed;
+                _smoothActive = false;
+            }
+
+            // Направление всегда к текущей предсказанной точке цели — нет лага по направлению
+            float dirX = rawAimX - vision.ScreenCx;
+            float dirY = rawAimY - vision.ScreenCy;
+            float dirLen = MathF.Sqrt(dirX * dirX + dirY * dirY);
+            float stop = Math.Max(0.5f, vision.StopDist);
+
+            float moveX, moveY;
+            if (dirLen < stop || smoothSpeed < 0.1f)
+            {
+                moveX = 0; moveY = 0;
+            }
+            else
+            {
+                float step = Math.Min(smoothSpeed, dirLen - stop);
+                step = Math.Min(step, MaxStep); // MaxStep уже в GetAimDeltaForPoint, но на всякий случай
+                float inv = step / dirLen;
+                moveX = dirX * inv;
+                moveY = dirY * inv;
+            }
+
+            // Стоп-зона — сбрасываем аккумулятор, но не сбрасываем сглаживание скорости
+            if (MathF.Abs(moveX) < 0.01f && MathF.Abs(moveY) < 0.01f)
+            { accumX = accumY = 0; continue; }
 
             // Jitter только при большой дистанции
-            var (rawDx, rawDy) = Vision.GetDelta();
-            float realDist = MathF.Sqrt(rawDx * rawDx + rawDy * rawDy);
+            float realDist = MathF.Sqrt(aim.RawDx * aim.RawDx + aim.RawDy * aim.RawDy);
             if (realDist > 40f)
             {
                 moveX += (float)(_rng.NextDouble() * 2 - 1) * HumanJitter;
@@ -244,7 +288,9 @@ public sealed class MouseLogic : IDisposable
                 onSince = null;
                 Snooze(interval); continue;
             }
-            if (LmbHeld || (TbAimOnly && !AimHeld))
+            // Игнорируем LmbHeld если LMB используется как кнопка аима
+            bool userClicking = LmbHeld && BindAim != "lmb";
+            if (userClicking || (TbAimOnly && !AimHeld))
             {
                 Vision.IsOnTarget = false;
                 onSince = null;
@@ -261,6 +307,7 @@ public sealed class MouseLogic : IDisposable
                     ? _rng.NextDouble() * (TbDelayMax - TbDelayMin) + TbDelayMin : 0;
                 if (now - onSince >= delay && now - lastFire > 0.010)
                 {
+                    if (!Vision.IsCrosshairOnTarget(TbTolerance)) { onSince = null; Snooze(interval); continue; }
                     MouseClick();
                     lastFire = Ts();
                     onSince  = null;
@@ -308,26 +355,35 @@ public sealed class MouseLogic : IDisposable
 
     private void RfUpdateFromTarget()
     {
-        if (!RfEnabled || RfTable.Count == 0 || Vision?.LastTarget == null) return;
-        float h = Vision.LastTarget.Y2 - Vision.LastTarget.Y1;
+        var vision = Vision;
+        var target = vision?.LastTarget;
+        if (!RfEnabled || RfTable.Count == 0 || target == null || vision == null) return;
+        float h = target.Y2 - target.Y1;
         if (h <= 0) return;
         RfCurrentOffset     = RfInterpolate(h);
-        Vision.AimYOffsetPx = RfBaseYOffset + RfCurrentOffset;
+        vision.RfYOffsetExtra = RfBaseYOffset + RfCurrentOffset;
     }
 
     // ── Input handling ────────────────────────────────────────────────────────
     private void OnMousePressed(object? sender, MouseHookEventArgs e)
         => HandleMouse(MapMouseButton(e.Data.Button), true);
     private void OnMouseReleased(object? sender, MouseHookEventArgs e)
-        => HandleMouse(MapMouseButton(e.Data.Button), false);
+    {
+        string btn = MapMouseButton(e.Data.Button);
+        if (btn == "lmb" && _ignoreNextLmbUp)
+        { _ignoreNextLmbUp = false; return; }
+        HandleMouse(btn, false);
+    }
 
     private void HandleMouse(string btn, bool pressed)
     {
-        if (btn == "lmb") { LmbHeld = pressed; return; }
+        if (btn == "lmb") LmbHeld = pressed;
+
         if (btn == BindAim)
         {
             if (ToggleMode) { if (pressed) AimHeld = !AimHeld; }
             else AimHeld = pressed;
+            if (Vision != null) Vision.ResetGhost();
             return;
         }
         if (btn == BindSwitchTarget && pressed && Vision?.IsReady() == true)
@@ -338,7 +394,7 @@ public sealed class MouseLogic : IDisposable
     {
         string k = MapKey(e.Data.KeyCode);
         if (string.IsNullOrEmpty(k)) return;
-        if (k == BindAim)          { if (ToggleMode) AimHeld = !AimHeld; else AimHeld = true; return; }
+        if (k == BindAim)          { if (ToggleMode) AimHeld = !AimHeld; else AimHeld = true; Vision?.ResetGhost(); return; }
         if (k == BindSwitchTarget && Vision?.IsReady() == true) { Vision.SwitchTarget(); return; }
         if (k == BindToggle)       { Enabled = !Enabled; OnToggleEnabled?.Invoke(Enabled); return; }
         if (k == BindOverlay)      { OnShowOverlay?.Invoke();     return; }
@@ -352,7 +408,12 @@ public sealed class MouseLogic : IDisposable
 
     private void OnKeyReleased(object? sender, KeyboardHookEventArgs e)
     {
-        if (MapKey(e.Data.KeyCode) == BindAim && !ToggleMode) AimHeld = false;
+        string k = MapKey(e.Data.KeyCode);
+        if (k == BindAim && !ToggleMode)
+        {
+            AimHeld = false;
+            Vision?.ResetGhost();
+        }
     }
 
     private static string MapMouseButton(MouseButton btn) => btn switch

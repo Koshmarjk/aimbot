@@ -169,6 +169,19 @@ public sealed class OverlayWindow : Window
             };
             Canvas.SetLeft(lbl, d.X1 + 2); Canvas.SetTop(lbl, d.Y1 + 2);
             _canvas.Children.Add(lbl); _dyn.Add(lbl);
+
+            // Линия от центра до цели (только внутри FOV)
+            if (d.Dist <= _engine.FovRadius)
+            {
+                var lineCol = Color.FromArgb(isTgt ? (byte)60 : (byte)18, col.R, col.G, col.B);
+                AddDyn(new Line
+                {
+                    X1 = cx, Y1 = cy, X2 = d.Cx, Y2 = d.Cy,
+                    Stroke = new SolidColorBrush(lineCol),
+                    StrokeThickness = isTgt ? 1.0 : 0.5,
+                    StrokeDashArray = isTgt ? null : new DoubleCollection { 4, 8 }
+                }, 0, 0);
+            }
         }
 
         // Aim dot
