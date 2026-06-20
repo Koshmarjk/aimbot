@@ -96,7 +96,7 @@ public sealed class MouseLogic : IDisposable
     private float _smoothSpeed;
     private bool  _smoothActive;
     private readonly Random _rng = new();
-    private const float HumanJitter = 0.35f;
+    private const float HumanJitter = 0f;
     private bool _ignoreNextLmbUp; // триггербот: фейковый LMB Up не сбрасывает аим
 
     // ── Hook ──────────────────────────────────────────────────────────────────
@@ -151,8 +151,8 @@ public sealed class MouseLogic : IDisposable
     // ── Aim Loop ──────────────────────────────────────────────────────────────
     private void AimLoop()
     {
-        int    lastFid = -1;
-        float  accumX  = 0, accumY = 0;
+        int lastFid = -1;
+        float accumX = 0, accumY = 0;
         // Для точного таймера используем Stopwatch вместо Thread.Sleep(int)
         var sw = System.Diagnostics.Stopwatch.StartNew();
         double lastT = 0;
@@ -170,7 +170,7 @@ public sealed class MouseLogic : IDisposable
             // ── Точный frame-sync или Hz-throttle ────────────────────────────
             if (AimHz > 0)
             {
-                double minDt  = 1.0 / AimHz;
+                double minDt = 1.0 / AimHz;
                 double elapsed = sw.Elapsed.TotalSeconds - lastT;
                 if (elapsed < minDt)
                 {
@@ -195,31 +195,33 @@ public sealed class MouseLogic : IDisposable
             float spd = aim.TargetSpeed;
             if (spd > 50f) adaptiveStr *= 1.0f + MathF.Min(spd / 600f, 0.4f);
 
-            // --- Anti-pendulum: сглаживаем СКОРОСТЬ, а не точку цели и не вектор движения ---
-            // Раньше: EMA на moveX/moveY → маятник.
-            // Потом: EMA на точку цели → без маятника, но наводка останавливалась вдалеке от цели.
-            // Теперь: EMA на скаляр скорости, направление всегда к текущей предсказанной точке цели.
+            // --- Anti-pendulum: сглаживаем СКАЛЯР скорости, а не вектор движения ---
+            // Важно: направление всегда считается к текущей предсказанной точке.
+            // Так не получается двухзвенная система EMA-вектор + интегратор мыши, которая даёт маятник.
             float rawAimX = vision.ScreenCx + aim.RawDx;
             float rawAimY = vision.ScreenCy + aim.RawDy;
-
             bool isGhost = aim.RealTarget == null && aim.LastTarget != null;
 
-            // Сырой шаг от Vision (учёт strength, maxStep, stopDist, smoothstep, ghost-ослабления)
+            // Сырой шаг от Vision: strength/maxStep/stopDist/smoothstep/ghost fade.
             var (rawMoveX, rawMoveY) = vision.GetAimDeltaForPoint(rawAimX, rawAimY, adaptiveStr, MaxStep, isGhost);
             float rawSpeed = MathF.Sqrt(rawMoveX * rawMoveX + rawMoveY * rawMoveY);
 
             float smoothSpeed;
             if (Smooth > 0.01f)
             {
-                if (!_smoothActive) { _smoothSpeed = rawSpeed; _smoothActive = true; }
+                if (!_smoothActive)
+                {
+                    _smoothSpeed = rawSpeed;
+                    _smoothActive = true;
+                }
                 else if (rawSpeed > _smoothSpeed * 1.01f)
                 {
-                    // Разгон — плавный, чтобы не было рывков
+                    // Разгон — плавный, чтобы не было рывков.
                     _smoothSpeed = Smooth * rawSpeed + (1f - Smooth) * _smoothSpeed;
                 }
                 else
                 {
-                    // Торможение/догон к цели — быстрое, чтобы не замирать вблизи
+                    // Торможение/догон к цели — быстрый, чтобы не замирать около цели.
                     const float brakeSmooth = 0.8f;
                     _smoothSpeed = brakeSmooth * rawSpeed + (1f - brakeSmooth) * _smoothSpeed;
                 }
@@ -231,7 +233,7 @@ public sealed class MouseLogic : IDisposable
                 _smoothActive = false;
             }
 
-            // Направление всегда к текущей предсказанной точке цели — нет лага по направлению
+            // Направление всегда к текущей цели — без лага по направлению и без маятника.
             float dirX = rawAimX - vision.ScreenCx;
             float dirY = rawAimY - vision.ScreenCy;
             float dirLen = MathF.Sqrt(dirX * dirX + dirY * dirY);
@@ -240,22 +242,32 @@ public sealed class MouseLogic : IDisposable
             float moveX, moveY;
             if (dirLen < stop || smoothSpeed < 0.1f)
             {
-                moveX = 0; moveY = 0;
+                moveX = 0;
+                moveY = 0;
             }
             else
             {
                 float step = Math.Min(smoothSpeed, dirLen - stop);
-                step = Math.Min(step, MaxStep); // MaxStep уже в GetAimDeltaForPoint, но на всякий случай
+                // Dynamic MaxStep: далеко быстро, возле цели мягче и без микроперелётов.
+                float dynamicMaxStep = Math.Min(MaxStep, Math.Max(1.25f, dirLen * 0.33f));
+                step = Math.Min(step, dynamicMaxStep);
                 float inv = step / dirLen;
                 moveX = dirX * inv;
                 moveY = dirY * inv;
             }
 
-            // Стоп-зона — сбрасываем аккумулятор, но не сбрасываем сглаживание скорости
+            // Стоп-зона — сбрасываем аккумулятор, но не сбрасываем сглаживание скорости.
             if (MathF.Abs(moveX) < 0.01f && MathF.Abs(moveY) < 0.01f)
-            { accumX = accumY = 0; continue; }
+            {
+                accumX = accumY = 0;
+                continue;
+            }
 
-            // Jitter только при большой дистанции
+            // Сброс subpixel-аккумулятора при смене направления — убирает мелкий bounce через центр.
+            if (moveX * accumX < 0) accumX = 0;
+            if (moveY * accumY < 0) accumY = 0;
+
+            // Небольшой human jitter только далеко от цели, чтобы не портить финальную доводку.
             float realDist = MathF.Sqrt(aim.RawDx * aim.RawDx + aim.RawDy * aim.RawDy);
             if (realDist > 40f)
             {
@@ -263,9 +275,15 @@ public sealed class MouseLogic : IDisposable
                 moveY += (float)(_rng.NextDouble() * 2 - 1) * HumanJitter;
             }
 
-            accumX += moveX; accumY += moveY;
+            accumX += moveX;
+            accumY += moveY;
             int sx = (int)accumX, sy = (int)accumY;
-            if (sx != 0 || sy != 0) { MouseMove(sx, sy); accumX -= sx; accumY -= sy; }
+            if (sx != 0 || sy != 0)
+            {
+                MouseMove(sx, sy);
+                accumX -= sx;
+                accumY -= sy;
+            }
         }
     }
 
@@ -371,7 +389,15 @@ public sealed class MouseLogic : IDisposable
     {
         string btn = MapMouseButton(e.Data.Button);
         if (btn == "lmb" && _ignoreNextLmbUp)
-        { _ignoreNextLmbUp = false; return; }
+        {
+            // Triggerbot generates a synthetic LMB Down/Up via SendInput.
+            // The synthetic Down can set LmbHeld=true through the global hook.
+            // If we fully ignore the matching synthetic Up, LmbHeld stays true forever,
+            // and TriggerbotLoop thinks the user is holding LMB, so it fires only once.
+            _ignoreNextLmbUp = false;
+            LmbHeld = false;
+            return;
+        }
         HandleMouse(btn, false);
     }
 

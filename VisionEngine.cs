@@ -61,6 +61,14 @@ public sealed class VisionEngine : IDisposable
     public bool UseTiled { get; set; } = false;
     public int TileOverlap { get; set; } = 64;
 
+    // Stability / anti-jitter tuning
+    public float DetectionSmoothAlpha { get; set; } = 0.35f; // меньше = плавнее bbox/aim-point
+    public float StickySwitchRatio { get; set; } = 1.22f;    // новая цель должна быть на 22% лучше текущей
+    public float StickyRadiusPx { get; set; } = 85f;
+    public float MaxPredictionPx { get; set; } = 36f;
+    public float GhostMaxDistance { get; set; } = 90f;
+    private float _providerPredictionScale = 1.0f;
+
     // ── State ─────────────────────────────────────────────────────────────────
     private readonly object _stateLock = new();
     private readonly object _sessionLock = new();
@@ -103,7 +111,7 @@ public sealed class VisionEngine : IDisposable
     // prediction=1.0 → упреждение на ~1 кадр вперёд (динамически по реальному FPS)
     // prediction=0.5 → полкадра, prediction=2.0 → два кадра
     private float _frameInterval = 0.016f; // обновляется в UpdateVelocity по реальному dt
-    private float PredictDt => PredictionStr * _frameInterval;
+    private float PredictDt => PredictionStr * _providerPredictionScale * _frameInterval;
 
     private bool _manualLock;
     private double _manualLockUntil;
@@ -230,7 +238,35 @@ else
             Console.WriteLine($"[vision] Model input size: {_modelInputSize}px");
             // Capture size независим от размера модели — Preprocess() сам ресайзит
         }
+        ApplyProviderRuntimeProfile();
         Warmup();
+    }
+
+    private void ApplyProviderRuntimeProfile()
+    {
+        string p = ProviderName;
+        if (p.StartsWith("DML", StringComparison.OrdinalIgnoreCase))
+        {
+            // DirectML часто даёт более неровный frame pacing/latency, из-за чего prediction
+            // может перекидывать цель через центр и создавать маятник. Для DML профиль мягче.
+            _providerPredictionScale = 0.55f;
+            MaxPredictionPx = Math.Min(MaxPredictionPx, 24f);
+            DetectionSmoothAlpha = Math.Min(DetectionSmoothAlpha, 0.30f);
+            StickySwitchRatio = Math.Max(StickySwitchRatio, 1.30f);
+            GhostMaxDistance = Math.Min(GhostMaxDistance, 70f);
+            Console.WriteLine("[vision] DML runtime profile: prediction×0.55, maxPred=24px, stronger detection smoothing");
+        }
+        else if (p.Contains("TensorRT", StringComparison.OrdinalIgnoreCase))
+        {
+            // TensorRT обычно даёт более стабильную задержку — оставляем быстрый профиль.
+            _providerPredictionScale = 1.0f;
+            MaxPredictionPx = Math.Max(MaxPredictionPx, 36f);
+            Console.WriteLine("[vision] TensorRT runtime profile: low-latency defaults");
+        }
+        else
+        {
+            _providerPredictionScale = 0.85f;
+        }
     }
 
     // ── NUMA-пиннинг: HIGH priority + опциональный affinity к Socket 0 ─────────
@@ -479,6 +515,16 @@ else
     public void SetConf(float v) { ConfThresh = Math.Clamp(v, 0.1f, 0.99f); }
     public void SetCaptureSize(int s) { ApplyCaptureSize(Math.Max(64, s)); }
 
+    private (float x, float y) ClampPrediction(float x, float y)
+    {
+        float max = Math.Max(0f, MaxPredictionPx);
+        if (max <= 0f) return (0f, 0f);
+        float len = MathF.Sqrt(x * x + y * y);
+        if (len <= max || len < 1e-3f) return (x, y);
+        float k = max / len;
+        return (x * k, y * k);
+    }
+
     public bool TryGetAimSnapshot(out AimSnapshot snapshot)
     {
         lock (_stateLock)
@@ -490,13 +536,14 @@ else
             }
 
             float dt = PredictDt;
+            var (predX, predY) = ClampPrediction(_velX * dt, _velY * dt);
             snapshot = new AimSnapshot(
                 _lastTarget,
                 _realTarget,
                 _frameId,
                 _targetSpeed,
-                _lastTarget.AimX + _velX * dt - _screenCx,
-                _lastTarget.AimY + _velY * dt + TotalYOffset - _screenCy);
+                _lastTarget.AimX + predX - _screenCx,
+                _lastTarget.AimY + predY + TotalYOffset - _screenCy);
             return true;
         }
     }
@@ -540,6 +587,7 @@ else
                 oldOv?.Dispose();
                 oldSess?.Dispose();
 
+                ApplyProviderRuntimeProfile();
                 Console.WriteLine($"[vision] Model restarted [OpenVINO Native], input: {_modelInputSize}px");
                 return;
             }
@@ -570,14 +618,21 @@ OpenVinoSession? oldOvSess;
     oldOvSess = _ovSession;
     _ovSession = null;
 #endif
-            _session = null;
-            _inputName = null;
+            _inputName = newSession.InputMetadata.Keys.First();
+
+            var shape = newSession.InputMetadata[_inputName].Dimensions;
+            int detectedSize = shape.Length >= 3 && shape[2] > 0 ? shape[2] : 640;
+            _modelInputSize = detectedSize;
+
+            _session = newSession;
+            ProviderName = pName;
         }
         oldSession?.Dispose();
 #if USE_OPENVINO
 oldOvSess?.Dispose();
 #endif
 
+        ApplyProviderRuntimeProfile();
         Console.WriteLine($"[vision] Model restarted [{pName}], input: {_modelInputSize}px");
         Warmup();
     }
@@ -713,6 +768,20 @@ oldOvSess?.Dispose();
                         float gdt = _frameInterval;
                         _ghostScreenAimX += _ghostVelX * gdt;
                         _ghostScreenAimY += _ghostVelY * gdt;
+
+                        // Не даём ghost улетать далеко из-за ошибочной скорости/скачка bbox.
+                        float gdx = _ghostScreenAimX - _anchorLastRealX;
+                        float gdy = _ghostScreenAimY - _anchorLastRealY;
+                        float glen = MathF.Sqrt(gdx * gdx + gdy * gdy);
+                        float gmax = Math.Max(10f, GhostMaxDistance);
+                        if (glen > gmax)
+                        {
+                            float k = gmax / glen;
+                            _ghostScreenAimX = _anchorLastRealX + gdx * k;
+                            _ghostScreenAimY = _anchorLastRealY + gdy * k;
+                            _ghostVelX *= 0.5f;
+                            _ghostVelY *= 0.5f;
+                        }
 
                         float gw = _ghostTarget.X2 - _ghostTarget.X1;
                         float gh_ = _ghostTarget.Y2 - _ghostTarget.Y1;
@@ -1125,22 +1194,22 @@ oldOvSess?.Dispose();
 
     private List<Detection> StabilityFilter(List<Detection> dets)
     {
-        double now = Ts();
         float dt = Math.Clamp(_frameInterval, 0.005f, 0.05f);
 
-        // Обновляем треки: двигаем по скорости, увеличиваем miss
+        // Track layout:
+        // 0 cx, 1 cy, 2 vx, 3 vy, 4 w, 5 h, 6 conf, 7 hits, 8 miss
         foreach (var tr in _tracks)
         {
-            tr[0] += tr[2] * dt; // predicted cx
-            tr[1] += tr[3] * dt; // predicted cy
-            tr[8]++;              // miss++
+            tr[0] += tr[2] * dt;
+            tr[1] += tr[3] * dt;
+            tr[8]++;
         }
 
-        // Матчим детекции к трекам по расстоянию центров
         var matched = new bool[dets.Count];
         foreach (var tr in _tracks)
         {
-            int best = -1; float bestD = SF_MAX_DIST;
+            int best = -1;
+            float bestD = SF_MAX_DIST;
             for (int i = 0; i < dets.Count; i++)
             {
                 if (matched[i]) continue;
@@ -1149,31 +1218,67 @@ oldOvSess?.Dispose();
                     (dets[i].Cy - tr[1]) * (dets[i].Cy - tr[1]));
                 if (dd < bestD) { bestD = dd; best = i; }
             }
+
             if (best < 0) continue;
             matched[best] = true;
             var d = dets[best];
-            // EMA скорость трека
-            tr[2] = 0.5f * (d.Cx - tr[0]) / dt + 0.5f * tr[2];
-            tr[3] = 0.5f * (d.Cy - tr[1]) / dt + 0.5f * tr[3];
-            tr[0] = d.Cx; tr[1] = d.Cy;
-            tr[4] = d.X2 - d.X1; tr[5] = d.Y2 - d.Y1;
-            tr[6] = d.Conf;
-            tr[7] = Math.Min(tr[7] + 1, 30); // hits++
-            tr[8] = 0; // miss = 0
+
+            // Резкий скачок bbox не принимаем полностью за 1 кадр: это главный источник дрожания aim-point.
+            float rawVx = (d.Cx - tr[0]) / dt;
+            float rawVy = (d.Cy - tr[1]) / dt;
+            float rawSpd = MathF.Sqrt(rawVx * rawVx + rawVy * rawVy);
+            if (rawSpd > 2200f && tr[7] >= 2)
+            {
+                rawVx *= 0.35f;
+                rawVy *= 0.35f;
+            }
+
+            float velAlpha = 0.45f;
+            tr[2] = velAlpha * rawVx + (1f - velAlpha) * tr[2];
+            tr[3] = velAlpha * rawVy + (1f - velAlpha) * tr[3];
+            tr[2] = Math.Clamp(tr[2], -1200f, 1200f);
+            tr[3] = Math.Clamp(tr[3], -900f, 900f);
+
+            float a = Math.Clamp(DetectionSmoothAlpha, 0.05f, 0.85f);
+            if (tr[7] < 2) a = Math.Max(a, 0.65f); // первые кадры быстрее цепляемся
+            tr[0] = a * d.Cx + (1f - a) * tr[0];
+            tr[1] = a * d.Cy + (1f - a) * tr[1];
+            tr[4] = a * (d.X2 - d.X1) + (1f - a) * tr[4];
+            tr[5] = a * (d.Y2 - d.Y1) + (1f - a) * tr[5];
+            tr[6] = 0.55f * d.Conf + 0.45f * tr[6];
+            tr[7] = Math.Min(tr[7] + 1, 30);
+            tr[8] = 0;
         }
-        // Новые треки для нематченных детекций
+
+        // Новые треки для нематченных детекций.
         for (int i = 0; i < dets.Count; i++)
-            if (!matched[i] && dets[i].Conf >= 0.25f)
-                _tracks.Add([dets[i].Cx, dets[i].Cy, 0f, 0f,
-                         dets[i].X2 - dets[i].X1, dets[i].Y2 - dets[i].Y1,
-                         dets[i].Conf, 1f, 0f]);
+        {
+            if (matched[i] || dets[i].Conf < Math.Max(0.20f, ConfThresh * 0.55f)) continue;
+            var d = dets[i];
+            _tracks.Add([d.Cx, d.Cy, 0f, 0f,
+                d.X2 - d.X1, d.Y2 - d.Y1,
+                d.Conf, 1f, 0f]);
+        }
 
         _tracks.RemoveAll(tr => tr[8] > SF_MISS);
-        if (ConfirmFrames == 0) return dets;
-        return dets.Where((d, i) =>
-            _tracks.Any(tr => tr[8] == 0 && (int)tr[7] >= ConfirmFrames &&
-                MathF.Sqrt((d.Cx - tr[0]) * (d.Cx - tr[0]) + (d.Cy - tr[1]) * (d.Cy - tr[1])) < SF_MAX_DIST / 2))
-            .ToList();
+
+        int minHits = Math.Max(1, ConfirmFrames);
+        var stable = new List<Detection>(Math.Min(_tracks.Count, 16));
+        foreach (var tr in _tracks)
+        {
+            if (tr[8] != 0 || (int)tr[7] < minHits) continue;
+            float w = Math.Max(2f, tr[4]);
+            float h = Math.Max(2f, tr[5]);
+            stable.Add(new Detection(
+                tr[0] - w * 0.5f,
+                tr[1] - h * 0.5f,
+                tr[0] + w * 0.5f,
+                tr[1] + h * 0.5f,
+                tr[6],
+                _screenCx, _screenCy));
+        }
+
+        return stable;
     }
     // ── Target selection ──────────────────────────────────────────────────────
     private Detection? PickTarget(List<Detection> dets)
@@ -1182,40 +1287,67 @@ oldOvSess?.Dispose();
         var cands = stable.Where(d => d.Dist <= FovRadius).ToList();
         if (cands.Count == 0) { _manualLock = false; return null; }
 
-        var lt = LastTarget;
+        Detection? lt;
+        bool hasAnchor;
+        float anchorX, anchorY;
+        lock (_stateLock)
+        {
+            lt = _lastTarget;
+            hasAnchor = _ghostTarget != null;
+            anchorX = hasAnchor ? _anchorLastRealX : (lt?.AimX ?? 0f);
+            anchorY = hasAnchor ? _anchorLastRealY : (lt?.AimY ?? 0f);
+        }
+
+        float Score(Detection d, bool sticky)
+        {
+            float fov = Math.Max(1f, FovRadius);
+            float dist01 = Math.Clamp(d.Dist / fov, 0f, 1f);
+            float distScore = 1f - dist01;
+            float sizeBonus = PrioritySize
+                ? Math.Clamp(MathF.Sqrt(Math.Max(1f, d.Area)) / 25f, 0.55f, 2.4f)
+                : 1f;
+            float anchorBonus = 1f;
+            if (hasAnchor || lt != null)
+            {
+                float da = MathF.Sqrt((d.AimX - anchorX) * (d.AimX - anchorX) + (d.AimY - anchorY) * (d.AimY - anchorY));
+                anchorBonus = 1f + 0.45f * (1f - Math.Clamp(da / Math.Max(40f, StickyRadiusPx), 0f, 1f));
+            }
+            float edgePenalty = dist01 > 0.92f ? 0.72f : 1f;
+            float stickyBonus = sticky ? 1.18f : 1f;
+            return d.Conf * (0.20f + 0.80f * distScore * distScore) * sizeBonus * anchorBonus * edgePenalty * stickyBonus;
+        }
+
+        // Ручное переключение: некоторое время держим ближайшую к выбранной цели.
         if (_manualLock && Ts() < _manualLockUntil && lt != null)
         {
-            var best = cands.MinBy(d => MathF.Sqrt((d.Cx - lt.Cx) * (d.Cx - lt.Cx) + (d.Cy - lt.Cy) * (d.Cy - lt.Cy)));
-            if (best != null && MathF.Sqrt((best.Cx - lt.Cx) * (best.Cx - lt.Cx) + (best.Cy - lt.Cy) * (best.Cy - lt.Cy)) < 60)
-                return best;
+            var locked = cands.MinBy(d => MathF.Sqrt((d.Cx - lt.Cx) * (d.Cx - lt.Cx) + (d.Cy - lt.Cy) * (d.Cy - lt.Cy)));
+            if (locked != null && MathF.Sqrt((locked.Cx - lt.Cx) * (locked.Cx - lt.Cx) + (locked.Cy - lt.Cy) * (locked.Cy - lt.Cy)) < StickyRadiusPx)
+                return locked;
             _manualLock = false;
         }
         else _manualLock = false;
 
-        // Якорь по последней РЕАЛЬНОЙ позиции (не ghost-экстраполяция)
-        bool hasAnchor = _ghostTarget != null;
-        float anchorX = hasAnchor ? _anchorLastRealX : (lt?.AimX ?? 0);
-        float anchorY = hasAnchor ? _anchorLastRealY : (lt?.AimY ?? 0);
+        var best = cands.MaxBy(d => Score(d, false));
+        if (best == null) return null;
 
-        if (hasAnchor || lt != null)
+        // Sticky target / hysteresis: не перескакиваем на соседнюю цель, если она лучше лишь чуть-чуть.
+        if (lt != null)
         {
-            return cands.MaxBy(d =>
+            var sticky = cands.MinBy(d => MathF.Sqrt((d.AimX - lt.AimX) * (d.AimX - lt.AimX) + (d.AimY - lt.AimY) * (d.AimY - lt.AimY)));
+            if (sticky != null)
             {
-                float distScore = 1f - MathF.Min(d.Dist / FovRadius, 1f);
-                float dToAnchor = MathF.Sqrt((d.AimX - anchorX) * (d.AimX - anchorX) + (d.AimY - anchorY) * (d.AimY - anchorY));
-                float inertia = dToAnchor < 40f ? 1.35f : 1f;
-                float sizeBonus = PrioritySize ? MathF.Sqrt(d.Area) / 25f : 1f;
-                return d.Conf * distScore * distScore * inertia * sizeBonus;
-            });
+                float ds = MathF.Sqrt((sticky.AimX - lt.AimX) * (sticky.AimX - lt.AimX) + (sticky.AimY - lt.AimY) * (sticky.AimY - lt.AimY));
+                if (ds <= StickyRadiusPx)
+                {
+                    float stickyScore = Score(sticky, true);
+                    float bestScore = Score(best, false);
+                    if (!ReferenceEquals(sticky, best) && stickyScore * StickySwitchRatio >= bestScore)
+                        return sticky;
+                }
+            }
         }
 
-        // Без якоря: сильно favourим ближайшую
-        return cands.MaxBy(d =>
-        {
-            float distScore = 1f - MathF.Min(d.Dist / FovRadius, 1f);
-            float sizeBonus = PrioritySize ? MathF.Sqrt(d.Area) / 25f : 1f;
-            return d.Conf * distScore * distScore * sizeBonus;
-        });
+        return best;
     }
 
     public void SwitchTarget()
@@ -1246,13 +1378,14 @@ oldOvSess?.Dispose();
             totalYOffset = TotalYOffset;
             isGhost = _realTarget == null && _ghostTarget != null;
         }
-        float aimX = t.AimX + velX * dt;
-        float aimY = t.AimY + velY * dt + totalYOffset;
+        var (predX, predY) = ClampPrediction(velX * dt, velY * dt);
+        float aimX = t.AimX + predX;
+        float aimY = t.AimY + predY + totalYOffset;
         return GetAimDeltaForPoint(aimX, aimY, strength, maxStep, isGhost);
     }
 
-    // Внешняя точка входа для MouseLogic: сглаживаем ТОЧКУ цели, а не вектор движения.
-    // Это убирает маятник, который давала двухзвенная система (EMA на скорость + интегратор положения).
+    // Внешняя точка входа для MouseLogic: считает сырой шаг к заданной точке.
+    // Финальный anti-pendulum контроллер живёт в MouseLogic и сглаживает только скаляр скорости.
     public (float dx, float dy) GetAimDeltaForPoint(float aimX, float aimY, float strength, float maxStep, bool isGhost = false)
     {
         // Ghost: уменьшаем силу наведения чтобы не дёргать к устаревшей позиции
@@ -1274,8 +1407,12 @@ oldOvSess?.Dispose();
         float stop = Math.Max(0.5f, StopDist);
         if (dist < stop) return (0, 0);
 
-        // Линейная формула без snap-эффекта
-        float step = dist * effectiveStrength;
+        // Smoothstep для дальних целей + линейное сближение вблизи.
+        // Это сохраняет быстрый заход, но не даёт snap/перелёта около stop-зоны.
+        const float transition = 100f;
+        float norm = Math.Clamp((dist - stop) / transition, 0f, 1f);
+        float ease = norm * norm * (3f - 2f * norm);
+        float step = Math.Max(ease * dist * effectiveStrength, (dist - stop) * effectiveStrength);
         step = MathF.Min(step, maxStep);
         step = MathF.Min(step, dist - stop); // никогда не перелетаем
         step = MathF.Max(step, 0f);
@@ -1292,7 +1429,8 @@ oldOvSess?.Dispose();
             var t = _lastTarget;
             if (t == null) return (0, 0);
             float dt = PredictDt;
-            return (t.AimX + _velX * dt - _screenCx, t.AimY + _velY * dt + TotalYOffset - _screenCy);
+            var (predX, predY) = ClampPrediction(_velX * dt, _velY * dt);
+            return (t.AimX + predX - _screenCx, t.AimY + predY + TotalYOffset - _screenCy);
         }
     }
 

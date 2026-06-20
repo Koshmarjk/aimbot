@@ -208,9 +208,9 @@
                                 <!-- Capture size — виден только в режиме тайлов -->
                                 <local:SliderRow x:Name="CaptureSizeRow"
                                                  Label="Зона захвата" Value="{Binding VisionCfg.CaptureSize}"
-                                                 Min="64" Max="1664" Format="F0" Unit="px"
+                                                 Min="64" Max="1920" Format="F0" Unit="px"
                                                  ValueChanged="OnCaptureSizeChanged"
-                                                 ToolTip="Сжатие: 320–640px оптимально. Тайлы (модель 416px): 416=1×1, 832=2×2, 1248=3×3, 1664=4×4."/>
+                                                 ToolTip="Сжатие: 320–640-1280-1920px оптимально. Тайлы (модель 416px): 416=1×1, 832=2×2, 1248=3×3, 1664=4×4."/>
                                 <TextBlock x:Name="CaptureSizeHint" FontSize="10" Margin="0,-2,0,6"
                                            Foreground="#666666" FontFamily="Consolas"
                                            Text="💡 Сжатие: рекомендуется 320–640 px"/>
@@ -219,7 +219,7 @@
                                 <local:SliderRow Label="Макс. шаг (px/тик)"  Value="{Binding VisionCfg.MaxStep}"   Min="2"   Max="100"  Format="F0"  Unit="px"   ValueChanged="OnMaxStepChanged"/>
                                 <local:SliderRow Label="Плавность наведения"  Value="{Binding VisionCfg.Smooth}"    Min="0" Max="1.0" Format="F2"            ValueChanged="OnSmoothChanged"/>
                                 <local:SliderRow Label="Предикция движения"   Value="{Binding VisionCfg.Prediction}" Min="0" Max="1.5" Format="F2" Unit="x"     ValueChanged="OnPredictionChanged"/>
-                                <local:SliderRow Label="Точка прицела ↑↓"    Value="{Binding VisionCfg.AimYOffset}" Min="-100" Max="250" Format="+0;-0;0" Unit="px" ValueChanged="OnAimYOffsetChanged"/>
+                                <local:SliderRow Label="Точка прицела ↑↓"    Value="{Binding VisionCfg.AimYOffset}" Min="-100" Max="300" Format="+0;-0;0" Unit="px" ValueChanged="OnAimYOffsetChanged"/>
                                 <local:SliderRow Label="Стоп-зона у цели"    Value="{Binding VisionCfg.StopDist}"   Min="0.5" Max="20" Format="F1" Unit="px"    ValueChanged="OnStopDistChanged"/>
                                 <local:SliderRow Label="Подтверждение кадров" Value="{Binding VisionCfg.ConfirmFrames}" Min="0" Max="15" Format="F0" Unit="кадр" ValueChanged="OnConfirmFramesChanged"/>
 
