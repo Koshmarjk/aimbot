@@ -23,6 +23,17 @@ public sealed class MouseLogic : IDisposable
     public float TbDelayMin  { get; set; } = 0f;
     public float TbDelayMax  { get; set; } = 0f;
     public bool  TbAimOnly   { get; set; } = true;
+    // Delay after switching/acquiring a different real target before triggerbot may fire.
+    public float TbTargetSwitchDelayMs  { get; set; } = 20f;
+    public float TbTargetSwitchRadiusPx { get; set; } = 80f;
+    // false = first acquire can fire instantly; delay applies only when switching from one target to another.
+    public bool  TbDelayOnFirstAcquire { get; set; } = false;
+
+    // Triggerbot aim drop: while aim button is held, every triggerbot shot shifts
+    // the current aim point slightly down. Releasing aim resets the offset.
+    public bool  TbAimDropEnabled { get; set; } = true;
+    public float TbAimDropStepPx  { get; set; } = 0f;
+    public float TbAimDropMaxPx   { get; set; } = 16f;
 
     // Rangefinder
     public bool                              RfEnabled          { get; set; } = false;
@@ -39,6 +50,7 @@ public sealed class MouseLogic : IDisposable
     public string BindHideGui      { get; set; } = "home";
     public string BindDeadZone     { get; set; } = "v";
     public string BindTriggerbot   { get; set; } = "\\";
+    public string BindClassToggle  { get; set; } = "t";
     public string BindRangefinder  { get; set; } = "r";
     public string BindExit         { get; set; } = "f12";
 
@@ -49,6 +61,7 @@ public sealed class MouseLogic : IDisposable
     public Action?       OnHideGui;
     public Action?       OnDeadZoneToggle;
     public Action?       OnTriggerbotToggle;
+    public Action<int>?   OnDetectionClassToggle;
     public Action?       OnRangefinderToggle;
     public Action?       OnExit;
 
@@ -96,8 +109,19 @@ public sealed class MouseLogic : IDisposable
     private float _smoothSpeed;
     private bool  _smoothActive;
     private readonly Random _rng = new();
-    private const float HumanJitter = 0.35f;
-    private bool _ignoreNextLmbUp; // триггербот: фейковый LMB Up не сбрасывает аим
+    private const float HumanJitter = 0f;
+    private bool _ignoreNextLmbDown; // триггербот: фейковый LMB Down не должен сбрасывать target lock
+    private bool _ignoreNextLmbUp;   // триггербот: фейковый LMB Up не сбрасывает аим
+    private void AddTriggerbotAimDrop()
+    {
+        if (!TbAimDropEnabled || TbAimDropStepPx <= 0f || TbAimDropMaxPx <= 0f) return;
+        Vision?.AddTemporaryAimYOffsetPx(TbAimDropStepPx, TbAimDropMaxPx);
+    }
+
+    private void ResetTriggerbotAimDrop()
+    {
+        Vision?.ResetTemporaryAimYOffset();
+    }
 
     // ── Hook ──────────────────────────────────────────────────────────────────
     private SimpleGlobalHook? _hook;
@@ -134,6 +158,7 @@ public sealed class MouseLogic : IDisposable
 
     private void MouseClick()
     {
+        _ignoreNextLmbDown = true;
         _ignoreNextLmbUp = true;
         var down = new Input();
         down.type         = 0;
@@ -151,8 +176,8 @@ public sealed class MouseLogic : IDisposable
     // ── Aim Loop ──────────────────────────────────────────────────────────────
     private void AimLoop()
     {
-        int    lastFid = -1;
-        float  accumX  = 0, accumY = 0;
+        int lastFid = -1;
+        float accumX = 0, accumY = 0;
         // Для точного таймера используем Stopwatch вместо Thread.Sleep(int)
         var sw = System.Diagnostics.Stopwatch.StartNew();
         double lastT = 0;
@@ -164,13 +189,14 @@ public sealed class MouseLogic : IDisposable
                 || !vision.TryGetAimSnapshot(out var aim) || aim.LastTarget == null)
             {
                 lastFid = -1; accumX = accumY = 0; _smoothActive = false;
+                ResetTriggerbotAimDrop();
                 Thread.Sleep(4); lastT = sw.Elapsed.TotalSeconds; continue;
             }
 
             // ── Точный frame-sync или Hz-throttle ────────────────────────────
             if (AimHz > 0)
             {
-                double minDt  = 1.0 / AimHz;
+                double minDt = 1.0 / AimHz;
                 double elapsed = sw.Elapsed.TotalSeconds - lastT;
                 if (elapsed < minDt)
                 {
@@ -193,33 +219,35 @@ public sealed class MouseLogic : IDisposable
             // Адаптивный strength: +0-40% в зависимости от скорости цели
             float adaptiveStr = Strength;
             float spd = aim.TargetSpeed;
-            if (spd > 50f) adaptiveStr *= 1.0f + MathF.Min(spd / 600f, 0.4f);
+            if (spd > 20f) adaptiveStr *= 1.0f + MathF.Min(spd / 350f, 0.95f);
 
-            // --- Anti-pendulum: сглаживаем СКОРОСТЬ, а не точку цели и не вектор движения ---
-            // Раньше: EMA на moveX/moveY → маятник.
-            // Потом: EMA на точку цели → без маятника, но наводка останавливалась вдалеке от цели.
-            // Теперь: EMA на скаляр скорости, направление всегда к текущей предсказанной точке цели.
+            // --- Anti-pendulum: сглаживаем СКАЛЯР скорости, а не вектор движения ---
+            // Важно: направление всегда считается к текущей предсказанной точке.
+            // Так не получается двухзвенная система EMA-вектор + интегратор мыши, которая даёт маятник.
             float rawAimX = vision.ScreenCx + aim.RawDx;
             float rawAimY = vision.ScreenCy + aim.RawDy;
-
             bool isGhost = aim.RealTarget == null && aim.LastTarget != null;
 
-            // Сырой шаг от Vision (учёт strength, maxStep, stopDist, smoothstep, ghost-ослабления)
+            // Сырой шаг от Vision: strength/maxStep/stopDist/smoothstep/ghost fade.
             var (rawMoveX, rawMoveY) = vision.GetAimDeltaForPoint(rawAimX, rawAimY, adaptiveStr, MaxStep, isGhost);
             float rawSpeed = MathF.Sqrt(rawMoveX * rawMoveX + rawMoveY * rawMoveY);
 
             float smoothSpeed;
             if (Smooth > 0.01f)
             {
-                if (!_smoothActive) { _smoothSpeed = rawSpeed; _smoothActive = true; }
+                if (!_smoothActive)
+                {
+                    _smoothSpeed = rawSpeed;
+                    _smoothActive = true;
+                }
                 else if (rawSpeed > _smoothSpeed * 1.01f)
                 {
-                    // Разгон — плавный, чтобы не было рывков
+                    // Разгон — плавный, чтобы не было рывков.
                     _smoothSpeed = Smooth * rawSpeed + (1f - Smooth) * _smoothSpeed;
                 }
                 else
                 {
-                    // Торможение/догон к цели — быстрое, чтобы не замирать вблизи
+                    // Торможение/догон к цели — быстрый, чтобы не замирать около цели.
                     const float brakeSmooth = 0.8f;
                     _smoothSpeed = brakeSmooth * rawSpeed + (1f - brakeSmooth) * _smoothSpeed;
                 }
@@ -231,31 +259,53 @@ public sealed class MouseLogic : IDisposable
                 _smoothActive = false;
             }
 
-            // Направление всегда к текущей предсказанной точке цели — нет лага по направлению
+            // Moving target feed-forward: P-step from strength can be too small near the target,
+            // so the aim trails behind a walking target. Guarantee a minimum tracking step
+            // proportional to target speed.
+            if (spd > 15f)
+            {
+                float minTrackStep = MathF.Min(MaxStep * 0.75f, spd / 75f);
+                smoothSpeed = MathF.Max(smoothSpeed, minTrackStep);
+            }
+
+            // Направление всегда к текущей цели — без лага по направлению и без маятника.
             float dirX = rawAimX - vision.ScreenCx;
             float dirY = rawAimY - vision.ScreenCy;
             float dirLen = MathF.Sqrt(dirX * dirX + dirY * dirY);
-            float stop = Math.Max(0.5f, vision.StopDist);
+            // For moving targets large StopDist causes visible lag: aim stops inside the zone
+            // while target keeps walking. Shrink stop zone dynamically when target has velocity.
+            float stop = spd > 20f ? Math.Min(Math.Max(0.5f, vision.StopDist), 1.0f) : Math.Max(0.5f, vision.StopDist);
 
             float moveX, moveY;
             if (dirLen < stop || smoothSpeed < 0.1f)
             {
-                moveX = 0; moveY = 0;
+                moveX = 0;
+                moveY = 0;
             }
             else
             {
                 float step = Math.Min(smoothSpeed, dirLen - stop);
-                step = Math.Min(step, MaxStep); // MaxStep уже в GetAimDeltaForPoint, но на всякий случай
+                // Dynamic MaxStep: далеко быстро, возле цели мягче и без микроперелётов.
+                float speedStepBoost = spd > 15f ? MathF.Min(spd / 70f, MaxStep * 0.75f) : 0f;
+                float dynamicMaxStep = Math.Min(MaxStep, Math.Max(1.25f, dirLen * 0.45f + speedStepBoost));
+                step = Math.Min(step, dynamicMaxStep);
                 float inv = step / dirLen;
                 moveX = dirX * inv;
                 moveY = dirY * inv;
             }
 
-            // Стоп-зона — сбрасываем аккумулятор, но не сбрасываем сглаживание скорости
+            // Стоп-зона — сбрасываем аккумулятор, но не сбрасываем сглаживание скорости.
             if (MathF.Abs(moveX) < 0.01f && MathF.Abs(moveY) < 0.01f)
-            { accumX = accumY = 0; continue; }
+            {
+                accumX = accumY = 0;
+                continue;
+            }
 
-            // Jitter только при большой дистанции
+            // Сброс subpixel-аккумулятора при смене направления — убирает мелкий bounce через центр.
+            if (moveX * accumX < 0) accumX = 0;
+            if (moveY * accumY < 0) accumY = 0;
+
+            // Небольшой human jitter только далеко от цели, чтобы не портить финальную доводку.
             float realDist = MathF.Sqrt(aim.RawDx * aim.RawDx + aim.RawDy * aim.RawDy);
             if (realDist > 40f)
             {
@@ -263,9 +313,15 @@ public sealed class MouseLogic : IDisposable
                 moveY += (float)(_rng.NextDouble() * 2 - 1) * HumanJitter;
             }
 
-            accumX += moveX; accumY += moveY;
+            accumX += moveX;
+            accumY += moveY;
             int sx = (int)accumX, sy = (int)accumY;
-            if (sx != 0 || sy != 0) { MouseMove(sx, sy); accumX -= sx; accumY -= sy; }
+            if (sx != 0 || sy != 0)
+            {
+                MouseMove(sx, sy);
+                accumX -= sx;
+                accumY -= sy;
+            }
         }
     }
 
@@ -277,6 +333,10 @@ public sealed class MouseLogic : IDisposable
         double?   onSince  = null;
         double    delay    = 0;
         double    lastFire = 0;
+        bool      hasTbTarget = false;
+        float     lastTbTargetX = 0f, lastTbTargetY = 0f;
+        double    lastTbTargetSeen = 0;
+        double    targetReadyAt = 0;
 
         while (!_cts.Token.IsCancellationRequested)
         {
@@ -285,6 +345,9 @@ public sealed class MouseLogic : IDisposable
             if (!TbEnabled || !Enabled || Vision == null || !Vision.IsReady())
             {
                 if (Vision != null) Vision.IsOnTarget = false;
+                ResetTriggerbotAimDrop();
+                hasTbTarget = false;
+                targetReadyAt = 0;
                 onSince = null;
                 Snooze(interval); continue;
             }
@@ -293,12 +356,65 @@ public sealed class MouseLogic : IDisposable
             if (userClicking || (TbAimOnly && !AimHeld))
             {
                 Vision.IsOnTarget = false;
+                ResetTriggerbotAimDrop();
+                hasTbTarget = false;
+                targetReadyAt = 0;
                 onSince = null;
                 Snooze(interval); continue;
             }
 
+            // Detect acquire/switch of the real target and add a short humanized fire delay.
+            var vision = Vision;
+            if (vision != null && vision.TryGetAimSnapshot(out var tbAim) && tbAim.RealTarget != null)
+            {
+                float tx = tbAim.RealTarget.AimX;
+                float ty = tbAim.RealTarget.AimY;
+                float switchRadius = Math.Max(10f, TbTargetSwitchRadiusPx);
+                float switchRadius2 = switchRadius * switchRadius;
+                float dx = tx - lastTbTargetX;
+                float dy = ty - lastTbTargetY;
+                bool firstAcquire = !hasTbTarget;
+                bool switched = !firstAcquire && dx * dx + dy * dy > switchRadius2;
+
+                if (firstAcquire)
+                {
+                    // First target under crosshair/aim should be allowed to fire immediately.
+                    // The switch delay is only for moving from one already tracked target to another.
+                    targetReadyAt = TbDelayOnFirstAcquire
+                        ? now + Math.Max(0f, TbTargetSwitchDelayMs) / 1000f
+                        : now;
+                    onSince = null;
+                }
+                else if (switched)
+                {
+                    float baseDelay = Math.Max(0f, TbTargetSwitchDelayMs) / 1000f;
+                    // +-25% micro jitter around requested delay.
+                    float jitter = baseDelay > 0f ? (float)(_rng.NextDouble() * 0.5 - 0.25) * baseDelay : 0f;
+                    targetReadyAt = now + Math.Max(0f, baseDelay + jitter);
+                    onSince = null;
+                }
+
+                hasTbTarget = true;
+                lastTbTargetX = tx;
+                lastTbTargetY = ty;
+                lastTbTargetSeen = now;
+            }
+            else if (hasTbTarget && now - lastTbTargetSeen > 0.25)
+            {
+                hasTbTarget = false;
+                targetReadyAt = 0;
+                onSince = null;
+            }
+
             bool onTarget     = Vision.IsCrosshairOnTarget(TbTolerance);
             Vision.IsOnTarget = onTarget;
+
+            if (onTarget && now < targetReadyAt)
+            {
+                onSince = null;
+                Snooze(Math.Max(0, Math.Min(interval, targetReadyAt - now)));
+                continue;
+            }
 
             if (onTarget)
             {
@@ -309,6 +425,7 @@ public sealed class MouseLogic : IDisposable
                 {
                     if (!Vision.IsCrosshairOnTarget(TbTolerance)) { onSince = null; Snooze(interval); continue; }
                     MouseClick();
+                    AddTriggerbotAimDrop();
                     lastFire = Ts();
                     onSince  = null;
                 }
@@ -366,12 +483,31 @@ public sealed class MouseLogic : IDisposable
 
     // ── Input handling ────────────────────────────────────────────────────────
     private void OnMousePressed(object? sender, MouseHookEventArgs e)
-        => HandleMouse(MapMouseButton(e.Data.Button), true);
+    {
+        string btn = MapMouseButton(e.Data.Button);
+        if (btn == "lmb" && _ignoreNextLmbDown)
+        {
+            // Synthetic triggerbot LMB Down can be seen by the global hook.
+            // If LMB is also the aim bind, processing it would call ResetGhost()
+            // and reset target lock after every shot, causing jumps between equal targets.
+            _ignoreNextLmbDown = false;
+            return;
+        }
+        HandleMouse(btn, true);
+    }
     private void OnMouseReleased(object? sender, MouseHookEventArgs e)
     {
         string btn = MapMouseButton(e.Data.Button);
         if (btn == "lmb" && _ignoreNextLmbUp)
-        { _ignoreNextLmbUp = false; return; }
+        {
+            // Triggerbot generates a synthetic LMB Down/Up via SendInput.
+            // The synthetic Down can set LmbHeld=true through the global hook.
+            // If we fully ignore the matching synthetic Up, LmbHeld stays true forever,
+            // and TriggerbotLoop thinks the user is holding LMB, so it fires only once.
+            _ignoreNextLmbUp = false;
+            LmbHeld = false;
+            return;
+        }
         HandleMouse(btn, false);
     }
 
@@ -381,8 +517,19 @@ public sealed class MouseLogic : IDisposable
 
         if (btn == BindAim)
         {
-            if (ToggleMode) { if (pressed) AimHeld = !AimHeld; }
-            else AimHeld = pressed;
+            if (ToggleMode)
+            {
+                if (pressed)
+                {
+                    AimHeld = !AimHeld;
+                    if (!AimHeld) ResetTriggerbotAimDrop();
+                }
+            }
+            else
+            {
+                AimHeld = pressed;
+                if (!pressed) ResetTriggerbotAimDrop();
+            }
             if (Vision != null) Vision.ResetGhost();
             return;
         }
@@ -394,13 +541,42 @@ public sealed class MouseLogic : IDisposable
     {
         string k = MapKey(e.Data.KeyCode);
         if (string.IsNullOrEmpty(k)) return;
-        if (k == BindAim)          { if (ToggleMode) AimHeld = !AimHeld; else AimHeld = true; Vision?.ResetGhost(); return; }
+        if (k == BindAim)
+        {
+            if (ToggleMode)
+            {
+                AimHeld = !AimHeld;
+                if (!AimHeld) ResetTriggerbotAimDrop();
+            }
+            else AimHeld = true;
+            Vision?.ResetGhost();
+            return;
+        }
         if (k == BindSwitchTarget && Vision?.IsReady() == true) { Vision.SwitchTarget(); return; }
-        if (k == BindToggle)       { Enabled = !Enabled; OnToggleEnabled?.Invoke(Enabled); return; }
+        if (k == BindToggle)
+        {
+            Enabled = !Enabled;
+            if (!Enabled) ResetTriggerbotAimDrop();
+            OnToggleEnabled?.Invoke(Enabled);
+            return;
+        }
         if (k == BindOverlay)      { OnShowOverlay?.Invoke();     return; }
         if (k == BindHideGui)      { OnHideGui?.Invoke();         return; }
         if (k == BindDeadZone)     { OnDeadZoneToggle?.Invoke();  return; }
-        if (k == BindTriggerbot)   { TbEnabled = !TbEnabled; OnTriggerbotToggle?.Invoke();  return; }
+        if (k == BindTriggerbot)
+        {
+            TbEnabled = !TbEnabled;
+            if (!TbEnabled) ResetTriggerbotAimDrop();
+            OnTriggerbotToggle?.Invoke();
+            return;
+        }
+        if (k == BindClassToggle && Vision?.IsReady() == true)
+        {
+            int cls = Vision.ToggleDetectionClass();
+            Vision.ResetGhost();
+            OnDetectionClassToggle?.Invoke(cls);
+            return;
+        }
         if (k == BindRangefinder)  { RfEnabled = !RfEnabled; OnRangefinderToggle?.Invoke(); return; }
         if (k == BindExit)         { OnExit?.Invoke(); return; }
         if (PresetBinds.TryGetValue(k, out int idx)) OnPresetApply?.Invoke(idx);
@@ -412,6 +588,7 @@ public sealed class MouseLogic : IDisposable
         if (k == BindAim && !ToggleMode)
         {
             AimHeld = false;
+            ResetTriggerbotAimDrop();
             Vision?.ResetGhost();
         }
     }

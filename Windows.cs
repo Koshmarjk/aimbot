@@ -187,7 +187,7 @@ public sealed class OverlayWindow : Window
         // Aim dot
         if (tgt != null)
         {
-            float ax = tgt.AimX, ay = tgt.AimY + _engine.AimYOffsetPx;
+            float ax = _engine.GetAimXForTarget(tgt), ay = tgt.AimY + _engine.GetAimYOffsetForTarget(tgt);
             AddDyn(new Ellipse
             {
                 Width = 6, Height = 6,

@@ -27,7 +27,7 @@ public partial class BindsPanel : UserControl
         ["f6"]="F6",["f7"]="F7",["f8"]="F8",["f9"]="F9",["f10"]="F10",
         ["f11"]="F11",["f12"]="F12",
         ["x1"]="MB4",["x2"]="MB5",["lmb"]="LMB",["rmb"]="RMB",
-        ["\\"]="\\",["space"]="SPACE",["v"]="V",["r"]="R",
+        ["\\"]="\\",["space"]="SPACE",["v"]="V",["r"]="R",["t"]="T",
     };
 
     private static string Display(string key) =>
@@ -50,6 +50,7 @@ public partial class BindsPanel : UserControl
             ("Скрыть GUI",         () => b.HideGui,        v => b.HideGui      = v),
             ("Мёртвые зоны",       () => b.DeadZone,       v => b.DeadZone     = v),
             ("Тригербот вкл/выкл", () => b.Triggerbot,     v => b.Triggerbot   = v),
+            ("Класс T/CT",         () => b.ClassToggle,    v => b.ClassToggle  = v),
             ("Дальномер вкл/выкл", () => b.Rangefinder,    v => b.Rangefinder  = v),
             ("Выход",              () => b.Exit,            v => b.Exit         = v),
         };

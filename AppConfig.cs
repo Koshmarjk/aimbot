@@ -12,6 +12,7 @@ public class VisionConfig
     [JsonPropertyName("model_path")]     public string ModelPath     { get; set; } = "C:\\Users\\kosta\\OneDrive\\Desktop\\bot\\models\\model_nano_416_op12_v2.onnx";
     [JsonPropertyName("fov_radius")]     public int    FovRadius     { get; set; } = 300;
     [JsonPropertyName("conf")]           public double Conf          { get; set; } = 0.45;
+    [JsonPropertyName("detection_class")] public int    DetectionClass { get; set; } = -1; // -1=T/CT, 0=CT, 1=T
     [JsonPropertyName("provider")]       public string Provider      { get; set; } = "tensorrt";
     [JsonPropertyName("use_fp16")]       public bool   UseFp16       { get; set; } = false;
     [JsonPropertyName("strength")]       public double Strength      { get; set; } = 0.15;
@@ -66,6 +67,7 @@ public class BindsConfig
     [JsonPropertyName("hide_gui")]      public string HideGui      { get; set; } = "home";
     [JsonPropertyName("dead_zone")]     public string DeadZone     { get; set; } = "v";
     [JsonPropertyName("triggerbot")]    public string Triggerbot   { get; set; } = "\\";
+    [JsonPropertyName("class_toggle")]  public string ClassToggle  { get; set; } = "t";
     [JsonPropertyName("rangefinder")]   public string Rangefinder  { get; set; } = "r";
     [JsonPropertyName("exit")]          public string Exit         { get; set; } = "f12";
 }

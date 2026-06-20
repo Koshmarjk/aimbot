@@ -106,23 +106,53 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool _initUi; // блокирует OnProviderChanged во время инициализации
 
+    // Не все элементы UI обязаны иметь generated-field из XAML. Если x:Name/поле
+    // отсутствует, ищем элемент по runtime name и не валим сборку code-behind.
+    private T? Ui<T>(string name) where T : FrameworkElement => FindName(name) as T;
+
     private void ApplyConfigToUi()
     {
         _initUi = true;
-        // Синхронизируем ComboBox провайдера из конфига
-        var prov = _cfg.Vision.Provider.ToLowerInvariant();
-        foreach (ComboBoxItem item in ProviderCombo.Items)
-            if (item.Tag?.ToString() == prov) { ProviderCombo.SelectedItem = item; break; }
-        if (ProviderCombo.SelectedItem == null) ProviderCombo.SelectedIndex = 0;
-        _initUi = false;
-        // Слайдер capture size виден только в режиме тайлов
-        CaptureSizeRow.Visibility = Visibility.Visible;
-        UpdateCaptureSizeHint(_cfg.Vision.CaptureSize, _cfg.Vision.UseTiled);
-        // Синхронизируем поля позиции индикатора
-        IndXBox.Text = (_cfg.IndicatorX >= 0 ? _cfg.IndicatorX : 20).ToString();
-        IndYBox.Text = (_cfg.IndicatorY >= 0 ? _cfg.IndicatorY : 20).ToString();
-        IndEnabledCheck.IsChecked = _cfg.IndicatorEnabled;
-        RefreshPresetSidebar();
+        try
+        {
+            // Синхронизируем ComboBox провайдера из конфига
+            var prov = _cfg.Vision.Provider.ToLowerInvariant();
+            foreach (ComboBoxItem item in ProviderCombo.Items)
+                if (item.Tag?.ToString() == prov) { ProviderCombo.SelectedItem = item; break; }
+            if (ProviderCombo.SelectedItem == null) ProviderCombo.SelectedIndex = 0;
+
+            // Важно: синхронизируем RadioButton под _initUi=true, иначе дефолтный Checked
+            // из XAML может перезаписать config обратно в use_tiled=true.
+            SyncCaptureModeUi(_cfg.Vision.UseTiled);
+
+            CaptureSizeRow.Visibility = Visibility.Visible;
+            UpdateCaptureSizeHint(_cfg.Vision.CaptureSize, _cfg.Vision.UseTiled);
+
+            // Синхронизируем поля позиции индикатора
+            if (Ui<TextBox>("IndXBox") is { } indXBox)
+                indXBox.Text = (_cfg.IndicatorX >= 0 ? _cfg.IndicatorX : 20).ToString();
+            if (Ui<TextBox>("IndYBox") is { } indYBox)
+                indYBox.Text = (_cfg.IndicatorY >= 0 ? _cfg.IndicatorY : 20).ToString();
+            if (Ui<CheckBox>("IndEnabledCheck") is { } indEnabledCheck)
+                indEnabledCheck.IsChecked = _cfg.IndicatorEnabled;
+            RefreshPresetSidebar();
+        }
+        finally
+        {
+            _initUi = false;
+        }
+    }
+
+    private void SyncCaptureModeUi(bool tiled)
+    {
+        if (Ui<RadioButton>("ModeTiled") is { } modeTiled)
+            modeTiled.IsChecked = tiled;
+
+        // В твоём XAML обычный режим называется ModeSquish ("Сжатие").
+        string[] normalNames = ["ModeSquish", "ModeNormal", "ModeSingle", "ModeCompress", "ModeCompressed", "ModeResize"];
+        foreach (string name in normalNames)
+            if (Ui<RadioButton>(name) is { } rb)
+                rb.IsChecked = !tiled;
     }
 
     private void InitVision()
@@ -148,7 +178,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 (float)vs.Conf, vs.FovRadius, vs.Provider, vs.CaptureSize, vs.UseFp16,
                 vs.NumaPinning, vs.NumaCores,
                 vs.DmlDeviceId);
-            _vision.AimYOffsetPx    = (float)vs.AimYOffset;
+            _vision.AimYOffsetPercent = (float)vs.AimYOffset;
             _vision.PredictionStr   = (float)vs.Prediction;
             _vision.ConfirmFrames   = vs.ConfirmFrames;
             _vision.StopDist        = (float)vs.StopDist;
@@ -164,6 +194,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Console.WriteLine($"[vision] Started — {_vision.ProviderName}");
             _overlay = new OverlayWindow(_vision);
             if (vs.ShowFov) _overlay.Show();
+            UpdateClassUi();
         }
         catch (Exception ex)
         {
@@ -270,6 +301,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _cfg.Triggerbot.Enabled = _mouse.TbEnabled;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TbCfg)));
         });
+        _mouse.OnDetectionClassToggle = _ => Dispatcher.Invoke(UpdateClassUi);
         _mouse.OnRangefinderToggle = () => Dispatcher.Invoke(() =>
         {
             _cfg.Rangefinder.Enabled = _mouse.RfEnabled;
@@ -411,7 +443,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             _vision.SetFov((int)p.FovRadius);
             _vision.SetConf((float)p.Conf);
-            _vision.AimYOffsetPx  = (float)p.AimYOffset;
+            _vision.AimYOffsetPercent = (float)p.AimYOffset;
             _vision.PredictionStr = (float)p.Prediction;
             _vision.ConfirmFrames = (int)p.ConfirmFrames;
             _vision.StopDist      = (float)p.StopDist;
@@ -498,6 +530,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _mouse.BindHideGui      = b.HideGui;
         _mouse.BindDeadZone     = b.DeadZone;
         _mouse.BindTriggerbot   = b.Triggerbot;
+        _mouse.BindClassToggle  = b.ClassToggle;
         _mouse.BindRangefinder  = b.Rangefinder;
         _mouse.BindExit         = b.Exit;
     }
@@ -571,7 +604,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OnIndicatorEnabledChanged(object sender, RoutedEventArgs e)
     {
         if (_initUi) return;
-        bool enabled = IndEnabledCheck.IsChecked == true;
+        bool enabled = (sender as CheckBox)?.IsChecked
+            ?? Ui<CheckBox>("IndEnabledCheck")?.IsChecked
+            ?? _cfg.IndicatorEnabled;
         _cfg.IndicatorEnabled = enabled;
         if (_indicator != null)
         {
@@ -598,16 +633,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ApplyIndicatorPos()
     {
-        if (!int.TryParse(IndXBox.Text, out int x)) x = _cfg.IndicatorX >= 0 ? _cfg.IndicatorX : 20;
-        if (!int.TryParse(IndYBox.Text, out int y)) y = _cfg.IndicatorY >= 0 ? _cfg.IndicatorY : 20;
+        var indXBox = Ui<TextBox>("IndXBox");
+        var indYBox = Ui<TextBox>("IndYBox");
+        if (!int.TryParse(indXBox?.Text, out int x)) x = _cfg.IndicatorX >= 0 ? _cfg.IndicatorX : 20;
+        if (!int.TryParse(indYBox?.Text, out int y)) y = _cfg.IndicatorY >= 0 ? _cfg.IndicatorY : 20;
         x = Math.Max(0, x);
         y = Math.Max(0, y);
         _cfg.IndicatorX = x;
         _cfg.IndicatorY = y;
-        IndXBox.Text = x.ToString();
-        IndYBox.Text = y.ToString();
+        if (indXBox != null) indXBox.Text = x.ToString();
+        if (indYBox != null) indYBox.Text = y.ToString();
         _indicator?.SetPosition(x, y);
         _dirty = true;
+    }
+
+    private void UpdateClassUi()
+    {
+        string text = _vision == null ? "Класс: —" : $"Класс: {_vision.ActiveClassName}";
+
+        if (Ui<TextBlock>("ClassModeText") is { } tb)
+            tb.Text = text;
+        if (Ui<Label>("ClassModeLabel") is { } lbl)
+            lbl.Content = text;
+        if (Ui<Button>("ClassToggleButton") is { } btn)
+            btn.Content = _vision == null ? "Класс: —" : $"Класс: {_vision.ActiveClassName}  ↔";
+    }
+
+    private void OnClassToggleClick(object sender, RoutedEventArgs e)
+    {
+        if (_vision == null) return;
+        _vision.ToggleDetectionClass();
+        UpdateClassUi();
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -645,7 +701,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     { if (_initUi) return; _cfg.Vision.Smooth = e.NewValue; _mouse.Smooth = (float)e.NewValue; _dirty = true; }
 
     private void OnAimYOffsetChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    { if (_initUi) return; _cfg.Vision.AimYOffset = e.NewValue; if (_vision != null) _vision.AimYOffsetPx = (float)e.NewValue; _dirty = true; }
+    {
+        // AimYOffset is stored in the old config field for compatibility,
+        // but now means percent of current target bbox height, not absolute pixels.
+        if (_initUi) return;
+        _cfg.Vision.AimYOffset = e.NewValue;
+        if (_vision != null) _vision.AimYOffsetPercent = (float)e.NewValue;
+        _dirty = true;
+    }
 
     private void OnPredictionChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (_initUi) return; _cfg.Vision.Prediction = e.NewValue; if (_vision != null) _vision.PredictionStr = (float)e.NewValue; _dirty = true; }
@@ -666,15 +729,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     { if (_initUi) return; _cfg.Triggerbot.DelayMax = e.NewValue; _mouse.TbDelayMax = (float)e.NewValue / 1000f; _dirty = true; }
 
     private void OnTbEnabledChanged(object sender, RoutedEventArgs e)
-    { if (_initUi) return; _cfg.Triggerbot.Enabled = TbEnabledCheck.IsChecked == true; _mouse.TbEnabled = _cfg.Triggerbot.Enabled; _dirty = true; }
+    {
+        if (_initUi) return;
+        _cfg.Triggerbot.Enabled = (sender as CheckBox)?.IsChecked
+            ?? Ui<CheckBox>("TbEnabledCheck")?.IsChecked
+            ?? _cfg.Triggerbot.Enabled;
+        _mouse.TbEnabled = _cfg.Triggerbot.Enabled;
+        _dirty = true;
+    }
 
     private void OnVisionEnabledChanged(object sender, RoutedEventArgs e)
-    { if (_initUi) return; _cfg.Vision.Enabled = VisionEnabledCheck.IsChecked == true; _dirty = true; }
+    {
+        if (_initUi) return;
+        _cfg.Vision.Enabled = (sender as CheckBox)?.IsChecked
+            ?? Ui<CheckBox>("VisionEnabledCheck")?.IsChecked
+            ?? _cfg.Vision.Enabled;
+        _dirty = true;
+    }
 
     private void OnShowFovChanged(object sender, RoutedEventArgs e)
     {
         if (_initUi) return;
-        _cfg.Vision.ShowFov = ShowFovCheck.IsChecked == true;
+        _cfg.Vision.ShowFov = (sender as CheckBox)?.IsChecked
+            ?? Ui<CheckBox>("ShowFovCheck")?.IsChecked
+            ?? _cfg.Vision.ShowFov;
         if (_cfg.Vision.ShowFov) _overlay?.Show(); else _overlay?.Hide();
         _dirty = true;
     }
@@ -682,7 +760,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OnDeadZoneEnabledChanged(object sender, RoutedEventArgs e)
     {
         if (_initUi) return;
-        _cfg.Vision.DeadZone = DeadZoneCheck.IsChecked == true;
+        _cfg.Vision.DeadZone = (sender as CheckBox)?.IsChecked
+            ?? Ui<CheckBox>("DeadZoneCheck")?.IsChecked
+            ?? _cfg.Vision.DeadZone;
         if (_vision != null) _vision.DeadZoneEnabled = _cfg.Vision.DeadZone;
         _overlay?.UpdateFov();
         _dirty = true;
@@ -691,9 +771,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OnCaptureModeChanged(object sender, RoutedEventArgs e)
     {
         if (_initUi) return;
-        bool tiled = ModeTiled.IsChecked == true;
+
+        bool tiled;
+        if (sender is RadioButton rb)
+        {
+            // Обрабатываем только Checked, а не Unchecked другого radio.
+            if (rb.IsChecked != true) return;
+
+            string n = rb.Name ?? string.Empty;
+            string tag = rb.Tag?.ToString() ?? string.Empty;
+            string content = rb.Content?.ToString() ?? string.Empty;
+            string key = (n + " " + tag + " " + content).ToLowerInvariant();
+
+            if (key.Contains("tile") || key.Contains("тайл"))
+                tiled = true;
+            else if (key.Contains("squish") || key.Contains("compress") || key.Contains("resize")
+                  || key.Contains("normal") || key.Contains("single")
+                  || key.Contains("сжат") || key.Contains("обыч"))
+                tiled = false;
+            else
+                tiled = Ui<RadioButton>("ModeTiled")?.IsChecked == true;
+        }
+        else
+        {
+            tiled = Ui<RadioButton>("ModeTiled")?.IsChecked == true;
+        }
+
         _cfg.Vision.UseTiled = tiled;
         if (_vision != null) _vision.UseTiled = tiled;
+        SyncCaptureModeUi(tiled);
         UpdateCaptureSizeHint(_cfg.Vision.CaptureSize, tiled);
         _dirty = true;
     }
@@ -710,7 +816,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateCaptureSizeHint(int size, bool tiled)
     {
-        if (CaptureSizeHint == null) return;
+        var captureSizeHint = Ui<TextBlock>("CaptureSizeHint");
+        if (captureSizeHint == null) return;
         int modelSize = _vision?.ModelInputSize > 0 ? _vision.ModelInputSize : 416;
         if (tiled)
         {
@@ -720,8 +827,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             string perf = tiles switch { 1 => "лёгкая нагрузка", 2 => "умеренная нагрузка", 3 => "высокая нагрузка", _ => "очень высокая нагрузка" };
             int recommended = modelSize * 2; // 2×2 — баланс качества и скорости
             string tip = size == recommended ? " ✓ рекомендуется" : size < recommended ? " (лучше поставить 832)" : "";
-            CaptureSizeHint.Text = $"💡 Тайлы: {grid} ({tiles*tiles} инференсов/кадр) — {perf}{tip}";
-            CaptureSizeHint.Foreground = tiles <= 2
+            captureSizeHint.Text = $"💡 Тайлы: {grid} ({tiles*tiles} инференсов/кадр) — {perf}{tip}";
+            captureSizeHint.Foreground = tiles <= 2
                 ? new SolidColorBrush(Color.FromRgb(0, 180, 100))
                 : new SolidColorBrush(Color.FromRgb(255, 140, 0));
         }
@@ -734,8 +841,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 <= 640 => "✓ хорошее качество",
                 _      => "медленно, избыточно для сжатия"
             };
-            CaptureSizeHint.Text = $"💡 Сжатие: {tip}";
-            CaptureSizeHint.Foreground = size is > 320 and <= 640
+            captureSizeHint.Text = $"💡 Сжатие: {tip}";
+            captureSizeHint.Foreground = size is > 320 and <= 640
                 ? new SolidColorBrush(Color.FromRgb(0, 180, 100))
                 : new SolidColorBrush(Color.FromRgb(150, 150, 150));
         }

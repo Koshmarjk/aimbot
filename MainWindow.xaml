@@ -169,7 +169,43 @@
                                             Background="#0A1A0A" Foreground="#00CC66"
                                             BorderBrush="#00CC66" BorderThickness="1" Padding="6,2"/>
                                 </Grid>
+								<!-- Переключение класса детекции T / CT -->
+								<Grid Margin="0,0,0,8">
+									<Grid.ColumnDefinitions>
+										<ColumnDefinition Width="130"/>
+										<ColumnDefinition Width="*"/>
+										<ColumnDefinition Width="Auto"/>
+									</Grid.ColumnDefinitions>
 
+									<TextBlock Grid.Column="0"
+											   Text="Класс детекции"
+											   Foreground="#AAAAAA"
+											   FontSize="11"
+											   VerticalAlignment="Center"/>
+
+									<TextBlock x:Name="ClassModeText"
+											   Grid.Column="1"
+											   Text="Класс: T"
+											   Foreground="#00CC66"
+											   FontFamily="Consolas"
+											   FontSize="12"
+											   FontWeight="Bold"
+											   VerticalAlignment="Center"/>
+
+									<Button x:Name="ClassToggleButton"
+											Grid.Column="2"
+											Content="Класс: T ↔"
+											Click="OnClassToggleClick"
+											Height="24"
+											FontSize="10"
+											Margin="6,0,0,0"
+											Background="#1A0A1A"
+											Foreground="#FF88FF"
+											BorderBrush="#AA44AA"
+											BorderThickness="1"
+											Padding="8,2"
+											ToolTip="Переключить детекцию T / CT. Горячая клавиша по умолчанию: T"/>
+								</Grid>
                                 <!-- Путь к модели -->
                                 <Grid Margin="0,0,0,8">
                                     <Grid.ColumnDefinitions>
@@ -208,18 +244,24 @@
                                 <!-- Capture size — виден только в режиме тайлов -->
                                 <local:SliderRow x:Name="CaptureSizeRow"
                                                  Label="Зона захвата" Value="{Binding VisionCfg.CaptureSize}"
-                                                 Min="64" Max="1664" Format="F0" Unit="px"
+                                                 Min="64" Max="1920" Format="F0" Unit="px"
                                                  ValueChanged="OnCaptureSizeChanged"
-                                                 ToolTip="Сжатие: 320–640px оптимально. Тайлы (модель 416px): 416=1×1, 832=2×2, 1248=3×3, 1664=4×4."/>
+                                                 ToolTip="Сжатие: 320–640-1280-1920px оптимально. Тайлы (модель 416px): 416=1×1, 832=2×2, 1248=3×3, 1664=4×4."/>
                                 <TextBlock x:Name="CaptureSizeHint" FontSize="10" Margin="0,-2,0,6"
                                            Foreground="#666666" FontFamily="Consolas"
                                            Text="💡 Сжатие: рекомендуется 320–640 px"/>
-                                <local:SliderRow Label="Уверенность"          Value="{Binding VisionCfg.Conf}"      Min="0.1" Max="0.9" Format="F2"             ValueChanged="OnConfChanged"/>
+                                <local:SliderRow Label="Уверенность"          Value="{Binding VisionCfg.Conf}"      Min="0" Max="1" Format="F2"             ValueChanged="OnConfChanged"/>
                                 <local:SliderRow Label="Сила наведения"       Value="{Binding VisionCfg.Strength}"  Min="0.03" Max="0.6" Format="F3"            ValueChanged="OnStrengthChanged"/>
                                 <local:SliderRow Label="Макс. шаг (px/тик)"  Value="{Binding VisionCfg.MaxStep}"   Min="2"   Max="100"  Format="F0"  Unit="px"   ValueChanged="OnMaxStepChanged"/>
                                 <local:SliderRow Label="Плавность наведения"  Value="{Binding VisionCfg.Smooth}"    Min="0" Max="1.0" Format="F2"            ValueChanged="OnSmoothChanged"/>
                                 <local:SliderRow Label="Предикция движения"   Value="{Binding VisionCfg.Prediction}" Min="0" Max="1.5" Format="F2" Unit="x"     ValueChanged="OnPredictionChanged"/>
-                                <local:SliderRow Label="Точка прицела ↑↓"    Value="{Binding VisionCfg.AimYOffset}" Min="-100" Max="250" Format="+0;-0;0" Unit="px" ValueChanged="OnAimYOffsetChanged"/>
+								<local:SliderRow Label="Точка прицела ↑↓"
+                 Value="{Binding VisionCfg.AimYOffset}"
+                 Min="-50"
+                 Max="100"
+                 Format="+0;-0;0"
+                 Unit="% box"
+                 ValueChanged="OnAimYOffsetChanged"/>
                                 <local:SliderRow Label="Стоп-зона у цели"    Value="{Binding VisionCfg.StopDist}"   Min="0.5" Max="20" Format="F1" Unit="px"    ValueChanged="OnStopDistChanged"/>
                                 <local:SliderRow Label="Подтверждение кадров" Value="{Binding VisionCfg.ConfirmFrames}" Min="0" Max="15" Format="F0" Unit="кадр" ValueChanged="OnConfirmFramesChanged"/>
 
