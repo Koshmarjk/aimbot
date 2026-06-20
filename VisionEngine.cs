@@ -17,14 +17,15 @@ namespace HachBobAI.Vision;
 public sealed class Detection
 {
     public float X1, Y1, X2, Y2, Conf;
+    public int ClassId;
     public float Cx, Cy;
     public float AimX, AimY;
     public float Dist, Area;
     private const float AimYFrac = 0.28f;
 
-    public Detection(float x1, float y1, float x2, float y2, float conf, float scx, float scy)
+    public Detection(float x1, float y1, float x2, float y2, float conf, float scx, float scy, int classId = 0)
     {
-        X1 = x1; Y1 = y1; X2 = x2; Y2 = y2; Conf = conf;
+        X1 = x1; Y1 = y1; X2 = x2; Y2 = y2; Conf = conf; ClassId = classId;
         Cx = (x1 + x2) * 0.5f; Cy = (y1 + y2) * 0.5f;
         float h = y2 - y1;
         AimX = Cx; AimY = y1 + h * AimYFrac;
@@ -49,10 +50,40 @@ public sealed class VisionEngine : IDisposable
     public int DmlDeviceId { get; set; } = 0;
     public float FovRadius { get; set; } = 300;
     public float ConfThresh { get; set; } = 0.45f;
+    // Dataset YAML order:
+    // names: [CT, T], nc: 2 => class 0 = CT, class 1 = T.
+    public int ModelClassCount { get; set; } = 2;
+    public string[] ModelClassNames { get; set; } = ["CT", "T"];
+    // YOLOv8 export usually has no objectness: [x,y,w,h,CT_conf,T_conf].
+    // Set true only for YOLOv5-like output: [x,y,w,h,obj,CT_conf,T_conf].
+    public bool OutputHasObjectness { get; set; } = false;
+    // -1 = both/all classes, 0 = CT, 1 = T.
+    public int ActiveClassId { get; private set; } = -1;
+    public string ActiveClassName => ActiveClassId < 0
+        ? "T/CT"
+        : ActiveClassId < ModelClassNames.Length ? ModelClassNames[ActiveClassId] : $"class{ActiveClassId}";
+    // Legacy name kept for existing config/UI bindings.
+    // Semantics changed: value is now PERCENT OF CURRENT BBOX HEIGHT, not absolute px.
+    // 0 = built-in aim point (Detection.AimY, currently upper body/head area),
+    // +10 = 10% of bbox lower, -10 = 10% of bbox higher.
     public float AimYOffsetPx { get; set; } = 0f;
-    public float RfYOffsetExtra { get; set; } = 0f;
-    private float TotalYOffset => AimYOffsetPx + RfYOffsetExtra;
+    public float AimYOffsetPercent
+    {
+        get => AimYOffsetPx;
+        set => AimYOffsetPx = value;
+    }
+    public float RfYOffsetExtra { get; set; } = 0f; // rangefinder still uses absolute px
+    // Small horizontal aim-point correction. Negative = left, positive = right.
+    // Percent of current bbox width, so it scales with target size.
+    public float AimXOffsetPercent { get; set; } = -5f;
+    private float _temporaryAimYOffsetPx; // temporary shot-to-shot point offset, absolute px
     public float PredictionStr { get; set; } = 0.6f;
+    // Auto lead for moving targets. Works even when config PredictionStr is 0.
+    public bool  AdaptiveMotionPrediction { get; set; } = true;
+    public float MotionPredictionMin { get; set; } = 0.55f;
+    public float MotionPredictionMax { get; set; } = 1.65f;
+    public float MotionPredictionStartSpeed { get; set; } = 25f;
+    public float MotionPredictionMaxSpeed { get; set; } = 550f;
     public float StopDist { get; set; } = 3f;
     public int ConfirmFrames { get; set; } = 3;
     public bool PrioritySize { get; set; } = true;
@@ -60,6 +91,34 @@ public sealed class VisionEngine : IDisposable
     public int AimHz { get; set; } = 0;
     public bool UseTiled { get; set; } = false;
     public int TileOverlap { get; set; } = 64;
+
+    // Stability / anti-jitter tuning
+    public float DetectionSmoothAlpha { get; set; } = 0.32f; // меньше = плавнее bbox/aim-point
+    public float StickySwitchRatio { get; set; } = 3.0f;     // новая цель должна быть сильно лучше текущей
+    public float StickyRadiusPx { get; set; } = 180f;
+    public float MaxPredictionPx { get; set; } = 64f;
+    public float GhostMaxDistance { get; set; } = 90f;
+
+    // Жёсткий target lock против мерцания/перескоков между несколькими целями.
+    public bool  TargetLockEnabled { get; set; } = true;
+    public bool  TargetLockHard { get; set; } = true;        // true = не переключаемся, пока locked цель видна
+    public float TargetLockRadiusPx { get; set; } = 320f;
+    // Strict same-target reacquire gate. Used instead of TargetLockRadiusPx to avoid snapping to neighbours.
+    public float TargetReacquireRadiusPx { get; set; } = 70f;
+    public float TargetLockMinIoU { get; set; } = 0.08f;
+    public float TargetSwitchScoreRatio { get; set; } = 999f;
+    public int   TargetLockMaxMissFrames { get; set; } = 10;
+    // Short grace only. Long values make aim stand still when old target flickers out.
+    public int   TargetLockHoldFrames { get; set; } = 3;
+    // New target must be stable for a few frames before switching from a lost lock.
+    public int   TargetSwitchConfirmFrames { get; set; } = 4;
+    public float TargetSwitchConfirmRadiusPx { get; set; } = 90f;
+    // Disabled by default: height-collapse switching can cause ping-pong between equal nearby targets.
+    // Enable only if you really need this behaviour.
+    public bool  SwitchOnHitboxHeightCollapse { get; set; } = false;
+    public float HitboxHeightCollapseRatio { get; set; } = 3.0f;
+    public float HitboxHeightCollapseMinPrevH { get; set; } = 55f;
+    private float _providerPredictionScale = 1.0f;
 
     // ── State ─────────────────────────────────────────────────────────────────
     private readonly object _stateLock = new();
@@ -103,10 +162,34 @@ public sealed class VisionEngine : IDisposable
     // prediction=1.0 → упреждение на ~1 кадр вперёд (динамически по реальному FPS)
     // prediction=0.5 → полкадра, prediction=2.0 → два кадра
     private float _frameInterval = 0.016f; // обновляется в UpdateVelocity по реальному dt
-    private float PredictDt => PredictionStr * _frameInterval;
+    private float EffectivePredictionStr
+    {
+        get
+        {
+            float p = Math.Max(0f, PredictionStr);
+            if (AdaptiveMotionPrediction && _targetSpeed > MotionPredictionStartSpeed)
+            {
+                float denom = Math.Max(1f, MotionPredictionMaxSpeed - MotionPredictionStartSpeed);
+                float t = Math.Clamp((_targetSpeed - MotionPredictionStartSpeed) / denom, 0f, 1f);
+                float auto = MotionPredictionMin + (MotionPredictionMax - MotionPredictionMin) * t;
+                p = Math.Max(p, auto);
+            }
+            return p;
+        }
+    }
+
+    private float PredictDt => EffectivePredictionStr * _providerPredictionScale * _frameInterval;
 
     private bool _manualLock;
     private double _manualLockUntil;
+
+    private bool _hasTargetLock;
+    private float _lockedAimX, _lockedAimY;
+    private float _lockedX1, _lockedY1, _lockedX2, _lockedY2;
+    private int _targetLockMissFrames;
+    private double _targetSwitchCooldownUntil;
+    private float _pendingSwitchAimX, _pendingSwitchAimY;
+    private int _pendingSwitchFrames;
 
     // ── Ghost target (инерция после потери цели) ──────────────────────────────
     // Если цель потерялась — ещё GhostFrames кадров ведём в последнюю позицию
@@ -117,6 +200,9 @@ public sealed class VisionEngine : IDisposable
         {
             _ghostTarget = null;
             _ghostFrames = 0;
+            _hasTargetLock = false;
+            _targetLockMissFrames = 0;
+            _pendingSwitchFrames = 0;
         }
     }
     private Detection? _ghostTarget;
@@ -230,7 +316,36 @@ else
             Console.WriteLine($"[vision] Model input size: {_modelInputSize}px");
             // Capture size независим от размера модели — Preprocess() сам ресайзит
         }
+        ApplyProviderRuntimeProfile();
         Warmup();
+    }
+
+    private void ApplyProviderRuntimeProfile()
+    {
+        string p = ProviderName;
+        if (p.StartsWith("DML", StringComparison.OrdinalIgnoreCase))
+        {
+            // DirectML часто даёт более неровный frame pacing/latency, из-за чего prediction
+            // может перекидывать цель через центр и создавать маятник. Для DML профиль мягче.
+            // DML can have uneven pacing, but too much prediction damping makes aim lag behind moving targets.
+            _providerPredictionScale = 1.0f;
+            MaxPredictionPx = Math.Max(MaxPredictionPx, 56f);
+            DetectionSmoothAlpha = Math.Min(DetectionSmoothAlpha, 0.35f);
+            StickySwitchRatio = Math.Max(StickySwitchRatio, 1.30f);
+            GhostMaxDistance = Math.Min(GhostMaxDistance, 90f);
+            Console.WriteLine("[vision] DML runtime profile: prediction×1.0, adaptive motion lead enabled");
+        }
+        else if (p.Contains("TensorRT", StringComparison.OrdinalIgnoreCase))
+        {
+            // TensorRT обычно даёт более стабильную задержку — оставляем быстрый профиль.
+            _providerPredictionScale = 1.0f;
+            MaxPredictionPx = Math.Max(MaxPredictionPx, 56f);
+            Console.WriteLine("[vision] TensorRT runtime profile: low-latency defaults");
+        }
+        else
+        {
+            _providerPredictionScale = 0.85f;
+        }
     }
 
     // ── NUMA-пиннинг: HIGH priority + опциональный affinity к Socket 0 ─────────
@@ -475,9 +590,72 @@ else
 #endif
         }
     }
+    public void SetDetectionClass(int classId)
+    {
+        int max = Math.Max(1, ModelClassCount);
+        ActiveClassId = Math.Clamp(classId, -1, max - 1);
+        ResetGhost();
+        Console.WriteLine($"[vision] Detection class → {ActiveClassName} ({ActiveClassId})");
+    }
+
+    public int ToggleDetectionClass()
+    {
+        int max = Math.Max(1, ModelClassCount);
+        // Cycle: T/CT (all) -> CT -> T -> T/CT.
+        SetDetectionClass(ActiveClassId < 0 ? 0 : (ActiveClassId + 1 >= max ? -1 : ActiveClassId + 1));
+        return ActiveClassId;
+    }
+
     public void SetFov(int r) { FovRadius = Math.Max(50, r); }
     public void SetConf(float v) { ConfThresh = Math.Clamp(v, 0.1f, 0.99f); }
     public void SetCaptureSize(int s) { ApplyCaptureSize(Math.Max(64, s)); }
+
+    public float GetAimXOffsetForTarget(Detection? target)
+    {
+        if (target == null) return 0f;
+        float w = Math.Max(1f, target.X2 - target.X1);
+        float pct = Math.Clamp(AimXOffsetPercent, -50f, 50f) * 0.01f;
+        return w * pct;
+    }
+
+    public float GetAimXForTarget(Detection target) => target.AimX + GetAimXOffsetForTarget(target);
+
+    public void AddTemporaryAimYOffsetPx(float stepPx, float maxPx)
+    {
+        if (stepPx <= 0f || maxPx <= 0f) return;
+        lock (_stateLock)
+            _temporaryAimYOffsetPx = Math.Min(_temporaryAimYOffsetPx + stepPx, maxPx);
+    }
+
+    public void ResetTemporaryAimYOffset()
+    {
+        lock (_stateLock)
+            _temporaryAimYOffsetPx = 0f;
+    }
+
+    public float GetAimYOffsetForTarget(Detection? target)
+    {
+        float temp;
+        lock (_stateLock)
+            temp = _temporaryAimYOffsetPx;
+
+        float rf = RfYOffsetExtra;
+        if (target == null) return rf + temp;
+
+        float h = Math.Max(1f, target.Y2 - target.Y1);
+        float pct = Math.Clamp(AimYOffsetPercent, -100f, 300f) * 0.01f;
+        return h * pct + rf + temp;
+    }
+
+    private (float x, float y) ClampPrediction(float x, float y)
+    {
+        float max = Math.Max(0f, MaxPredictionPx);
+        if (max <= 0f) return (0f, 0f);
+        float len = MathF.Sqrt(x * x + y * y);
+        if (len <= max || len < 1e-3f) return (x, y);
+        float k = max / len;
+        return (x * k, y * k);
+    }
 
     public bool TryGetAimSnapshot(out AimSnapshot snapshot)
     {
@@ -490,13 +668,14 @@ else
             }
 
             float dt = PredictDt;
+            var (predX, predY) = ClampPrediction(_velX * dt, _velY * dt);
             snapshot = new AimSnapshot(
                 _lastTarget,
                 _realTarget,
                 _frameId,
                 _targetSpeed,
-                _lastTarget.AimX + _velX * dt - _screenCx,
-                _lastTarget.AimY + _velY * dt + TotalYOffset - _screenCy);
+                GetAimXForTarget(_lastTarget) + predX - _screenCx,
+                _lastTarget.AimY + predY + GetAimYOffsetForTarget(_lastTarget) - _screenCy);
             return true;
         }
     }
@@ -540,6 +719,7 @@ else
                 oldOv?.Dispose();
                 oldSess?.Dispose();
 
+                ApplyProviderRuntimeProfile();
                 Console.WriteLine($"[vision] Model restarted [OpenVINO Native], input: {_modelInputSize}px");
                 return;
             }
@@ -570,14 +750,21 @@ OpenVinoSession? oldOvSess;
     oldOvSess = _ovSession;
     _ovSession = null;
 #endif
-            _session = null;
-            _inputName = null;
+            _inputName = newSession.InputMetadata.Keys.First();
+
+            var shape = newSession.InputMetadata[_inputName].Dimensions;
+            int detectedSize = shape.Length >= 3 && shape[2] > 0 ? shape[2] : 640;
+            _modelInputSize = detectedSize;
+
+            _session = newSession;
+            ProviderName = pName;
         }
         oldSession?.Dispose();
 #if USE_OPENVINO
 oldOvSess?.Dispose();
 #endif
 
+        ApplyProviderRuntimeProfile();
         Console.WriteLine($"[vision] Model restarted [{pName}], input: {_modelInputSize}px");
         Warmup();
     }
@@ -713,6 +900,20 @@ oldOvSess?.Dispose();
                         float gdt = _frameInterval;
                         _ghostScreenAimX += _ghostVelX * gdt;
                         _ghostScreenAimY += _ghostVelY * gdt;
+
+                        // Не даём ghost улетать далеко из-за ошибочной скорости/скачка bbox.
+                        float gdx = _ghostScreenAimX - _anchorLastRealX;
+                        float gdy = _ghostScreenAimY - _anchorLastRealY;
+                        float glen = MathF.Sqrt(gdx * gdx + gdy * gdy);
+                        float gmax = Math.Max(10f, GhostMaxDistance);
+                        if (glen > gmax)
+                        {
+                            float k = gmax / glen;
+                            _ghostScreenAimX = _anchorLastRealX + gdx * k;
+                            _ghostScreenAimY = _anchorLastRealY + gdy * k;
+                            _ghostVelX *= 0.5f;
+                            _ghostVelY *= 0.5f;
+                        }
 
                         float gw = _ghostTarget.X2 - _ghostTarget.X1;
                         float gh_ = _ghostTarget.Y2 - _ghostTarget.Y1;
@@ -870,74 +1071,110 @@ oldOvSess?.Dispose();
     // ── Postprocess — YOLOv8 person-only ─────────────────────────────────────
     private List<Detection> Postprocess(float[] raw)
     {
-        // Модель может возвращать [1,5,N] (YOLO стандарт) или [1,N,5]
-        // Python делает raw[0].T — т.е. работает с транспонированным [N,5]
-        // Определяем формат: если raw.Length делится на 5 и первые строки имеют conf < 1 — [N,5]
-        // Для моделей opset12 выход обычно [1, 5, N] → нужна транспозиция
-        int nAnchors;
-        bool transposed; // true = формат [1,5,N], false = [1,N,5]
+        int classCount = Math.Max(1, ModelClassCount);
+        int attrs = 4 + (OutputHasObjectness ? 1 : 0) + classCount;
+        if (raw.Length % attrs != 0)
+        {
+            int altAttrs = 4 + (!OutputHasObjectness ? 1 : 0) + classCount;
+            if (raw.Length % altAttrs == 0) attrs = altAttrs;
+            else
+            {
+                attrs = 5;
+                classCount = 1;
+            }
+        }
 
-        // Эвристика: пробуем [1,5,N] — типичный YOLOv8 export
-        // В этом случае raw = [cx0,cx1,...cxN, cy0,..., w0,..., h0,..., conf0,...]
-        // nAnchors = raw.Length / 5
-        nAnchors = raw.Length / 5;
-        // Проверяем conf в формате [1,5,N]: conf лежит в последних nAnchors элементах
-        float firstConfTransposed = raw.Length > nAnchors * 4 ? raw[nAnchors * 4] : 0f;
-        float firstConfNormal = raw.Length > 4 ? raw[4] : 0f;
-        // Если conf в нетранспонированном формате выглядит разумно (0..1) — используем его
-        transposed = !(firstConfNormal >= 0f && firstConfNormal <= 1f && firstConfNormal > firstConfTransposed);
+        int classOffset = attrs == 5 && classCount == 1 ? 4 : (attrs == 4 + classCount ? 4 : 5);
+        bool hasObj = classOffset == 5;
+        int nAnchors = raw.Length / attrs;
+        int activeClass = ActiveClassId; // -1 = all/best class per anchor
+        int classIdForShapeProbe = activeClass < 0 ? 0 : Math.Clamp(activeClass, 0, classCount - 1);
+
+        float firstScoreTransposed = raw.Length > (classOffset + classIdForShapeProbe) * nAnchors ? raw[(classOffset + classIdForShapeProbe) * nAnchors] : 0f;
+        float firstScoreNormal = raw.Length > classOffset + classIdForShapeProbe ? raw[classOffset + classIdForShapeProbe] : 0f;
+        bool transposed = !(firstScoreNormal >= 0f && firstScoreNormal <= 1f && firstScoreNormal > firstScoreTransposed);
 
         float scale = (float)_capSize / _modelInputSize;
         var boxes = new List<(float x1, float y1, float x2, float y2, float conf)>(128);
+        var boxClassIds = new List<int>(128);
 
         for (int i = 0; i < nAnchors; i++)
         {
-            float cxb, cyb, wb, hb, conf;
+            float cxb, cyb, wb, hb;
+            float obj = 1f;
             if (transposed)
             {
                 cxb = raw[0 * nAnchors + i];
                 cyb = raw[1 * nAnchors + i];
                 wb = raw[2 * nAnchors + i];
                 hb = raw[3 * nAnchors + i];
-                conf = raw[4 * nAnchors + i];
+                if (hasObj) obj = raw[4 * nAnchors + i];
             }
             else
             {
-                conf = raw[i * 5 + 4];
-                cxb = raw[i * 5 + 0];
-                cyb = raw[i * 5 + 1];
-                wb = raw[i * 5 + 2];
-                hb = raw[i * 5 + 3];
+                int off = i * attrs;
+                cxb = raw[off + 0];
+                cyb = raw[off + 1];
+                wb = raw[off + 2];
+                hb = raw[off + 3];
+                if (hasObj) obj = raw[off + 4];
+            }
+
+            int pickedClass = 0;
+            float conf = 0f;
+            if (classCount == 1)
+            {
+                conf = transposed ? raw[classOffset * nAnchors + i] : raw[i * attrs + classOffset];
+            }
+            else if (activeClass >= 0)
+            {
+                pickedClass = Math.Clamp(activeClass, 0, classCount - 1);
+                float clsScore = transposed
+                    ? raw[(classOffset + pickedClass) * nAnchors + i]
+                    : raw[i * attrs + classOffset + pickedClass];
+                conf = obj * clsScore;
+            }
+            else
+            {
+                // Track both T and CT: use the best class score for each anchor.
+                for (int c = 0; c < classCount; c++)
+                {
+                    float clsScore = transposed
+                        ? raw[(classOffset + c) * nAnchors + i]
+                        : raw[i * attrs + classOffset + c];
+                    float score = obj * clsScore;
+                    if (score > conf)
+                    {
+                        conf = score;
+                        pickedClass = c;
+                    }
+                }
             }
 
             if (conf < ConfThresh) continue;
             float w = wb * scale, h = hb * scale, maxPx = _capSize * 0.8f;
             if (w < 6 || h < 6 || w > maxPx || h > maxPx) continue;
 
-            // Фильтр пропорций: 0.12 — голова за стеной, 1.15 — игрок в приседе
             float aspect = w / Math.Max(h, 1f);
             if (aspect < 0.12f || aspect > 1.15f) continue;
-
-            // Минимальная площадь: шум <0.15% capture
             if (w * h < _capSize * _capSize * 0.0015f) continue;
 
             boxes.Add(((cxb - wb * 0.5f) * scale + _capLeft,
                        (cyb - hb * 0.5f) * scale + _capTop,
                        (cxb + wb * 0.5f) * scale + _capLeft,
                        (cyb + hb * 0.5f) * scale + _capTop, conf));
+            boxClassIds.Add(pickedClass);
         }
 
         if (boxes.Count == 0) return [];
 
-        // Адаптивный NMS: маленькие боксы — строже, большие — мягче
         float avgArea = boxes.Average(b => (b.x2 - b.x1) * (b.y2 - b.y1));
         float nmsThresh = avgArea < 2000f ? 0.25f : 0.45f;
-
         var keep = NMS(boxes, nmsThresh);
 
         var dets = keep.Select(k => new Detection(
             boxes[k].x1, boxes[k].y1, boxes[k].x2, boxes[k].y2,
-            boxes[k].conf, _screenCx, _screenCy)).ToList();
+            boxes[k].conf, _screenCx, _screenCy, boxClassIds[k])).ToList();
 
         if (DeadZoneEnabled && DeadZones.Count > 0)
         {
@@ -1052,26 +1289,79 @@ oldOvSess?.Dispose();
     private void PostprocessTile(float[] raw, int tileSize, int offX, int offY,
         System.Collections.Concurrent.ConcurrentBag<(float, float, float, float, float)> result)
     {
-        int nAnchors = raw.Length / 5;
+        int classCount = Math.Max(1, ModelClassCount);
+        int attrs = 4 + (OutputHasObjectness ? 1 : 0) + classCount;
+        if (raw.Length % attrs != 0)
+        {
+            int altAttrs = 4 + (!OutputHasObjectness ? 1 : 0) + classCount;
+            if (raw.Length % altAttrs == 0) attrs = altAttrs;
+            else
+            {
+                attrs = 5;
+                classCount = 1;
+            }
+        }
+
+        int classOffset = attrs == 5 && classCount == 1 ? 4 : (attrs == 4 + classCount ? 4 : 5);
+        bool hasObj = classOffset == 5;
+        int nAnchors = raw.Length / attrs;
+        int activeClass = ActiveClassId;
+        int classIdForShapeProbe = activeClass < 0 ? 0 : Math.Clamp(activeClass, 0, classCount - 1);
+
+        float firstScoreTransposed = raw.Length > (classOffset + classIdForShapeProbe) * nAnchors ? raw[(classOffset + classIdForShapeProbe) * nAnchors] : 0f;
+        float firstScoreNormal = raw.Length > classOffset + classIdForShapeProbe ? raw[classOffset + classIdForShapeProbe] : 0f;
+        bool transposed = !(firstScoreNormal >= 0f && firstScoreNormal <= 1f && firstScoreNormal > firstScoreTransposed);
 
         for (int i = 0; i < nAnchors; i++)
         {
-            float cxb = raw[0 * nAnchors + i];
-            float cyb = raw[1 * nAnchors + i];
-            float wb = raw[2 * nAnchors + i];
-            float hb = raw[3 * nAnchors + i];
-            float conf = raw[4 * nAnchors + i];
+            float cxb, cyb, wb, hb;
+            float obj = 1f;
+            if (transposed)
+            {
+                cxb = raw[0 * nAnchors + i];
+                cyb = raw[1 * nAnchors + i];
+                wb = raw[2 * nAnchors + i];
+                hb = raw[3 * nAnchors + i];
+                if (hasObj) obj = raw[4 * nAnchors + i];
+            }
+            else
+            {
+                int off = i * attrs;
+                cxb = raw[off + 0];
+                cyb = raw[off + 1];
+                wb = raw[off + 2];
+                hb = raw[off + 3];
+                if (hasObj) obj = raw[off + 4];
+            }
+
+            float conf = 0f;
+            if (classCount == 1)
+            {
+                conf = transposed ? raw[classOffset * nAnchors + i] : raw[i * attrs + classOffset];
+            }
+            else if (activeClass >= 0)
+            {
+                int cls = Math.Clamp(activeClass, 0, classCount - 1);
+                float clsScore = transposed ? raw[(classOffset + cls) * nAnchors + i] : raw[i * attrs + classOffset + cls];
+                conf = obj * clsScore;
+            }
+            else
+            {
+                for (int c = 0; c < classCount; c++)
+                {
+                    float clsScore = transposed ? raw[(classOffset + c) * nAnchors + i] : raw[i * attrs + classOffset + c];
+                    conf = Math.Max(conf, obj * clsScore);
+                }
+            }
 
             if (conf < ConfThresh) continue;
             float maxPx = tileSize * 0.8f;
             if (wb < 6 || hb < 6 || wb > maxPx || hb > maxPx) continue;
 
-            // Фильтр пропорций + min area (синхронно с Postprocess)
             float aspect = wb / Math.Max(hb, 1f);
             if (aspect < 0.12f || aspect > 1.15f) continue;
             if (wb * hb < tileSize * tileSize * 0.0015f) continue;
 
-            // Отбрасываем детекции у края тайла (дубли на стыках)
             const int edgeBuffer = 8;
             bool nearLeftEdge = (cxb - wb * 0.5f) < edgeBuffer && offX > 0;
             bool nearRightEdge = (cxb + wb * 0.5f) > tileSize - edgeBuffer && offX + tileSize < _capSize;
@@ -1079,7 +1369,6 @@ oldOvSess?.Dispose();
             bool nearBottomEdge = (cyb + hb * 0.5f) > tileSize - edgeBuffer && offY + tileSize < _capSize;
             if (nearLeftEdge || nearRightEdge || nearTopEdge || nearBottomEdge) continue;
 
-            // Координаты в пространстве тайла → экранное пространство
             float x1 = (cxb - wb * 0.5f) + offX + _capLeft;
             float y1 = (cyb - hb * 0.5f) + offY + _capTop;
             float x2 = (cxb + wb * 0.5f) + offX + _capLeft;
@@ -1125,22 +1414,28 @@ oldOvSess?.Dispose();
 
     private List<Detection> StabilityFilter(List<Detection> dets)
     {
-        double now = Ts();
+        // Fast path: ConfirmFrames=0 means "no confirmation/stability filter".
+        // This keeps the original high-FPS behavior (important for TensorRT 400-500+ FPS).
+        // TargetLock in PickTarget still prevents jumping between multiple targets.
+        if (ConfirmFrames <= 0)
+            return dets;
+
         float dt = Math.Clamp(_frameInterval, 0.005f, 0.05f);
 
-        // Обновляем треки: двигаем по скорости, увеличиваем miss
+        // Track layout:
+        // 0 cx, 1 cy, 2 vx, 3 vy, 4 w, 5 h, 6 conf, 7 hits, 8 miss
         foreach (var tr in _tracks)
         {
-            tr[0] += tr[2] * dt; // predicted cx
-            tr[1] += tr[3] * dt; // predicted cy
-            tr[8]++;              // miss++
+            tr[0] += tr[2] * dt;
+            tr[1] += tr[3] * dt;
+            tr[8]++;
         }
 
-        // Матчим детекции к трекам по расстоянию центров
         var matched = new bool[dets.Count];
         foreach (var tr in _tracks)
         {
-            int best = -1; float bestD = SF_MAX_DIST;
+            int best = -1;
+            float bestD = SF_MAX_DIST;
             for (int i = 0; i < dets.Count; i++)
             {
                 if (matched[i]) continue;
@@ -1149,73 +1444,306 @@ oldOvSess?.Dispose();
                     (dets[i].Cy - tr[1]) * (dets[i].Cy - tr[1]));
                 if (dd < bestD) { bestD = dd; best = i; }
             }
+
             if (best < 0) continue;
             matched[best] = true;
             var d = dets[best];
-            // EMA скорость трека
-            tr[2] = 0.5f * (d.Cx - tr[0]) / dt + 0.5f * tr[2];
-            tr[3] = 0.5f * (d.Cy - tr[1]) / dt + 0.5f * tr[3];
-            tr[0] = d.Cx; tr[1] = d.Cy;
-            tr[4] = d.X2 - d.X1; tr[5] = d.Y2 - d.Y1;
-            tr[6] = d.Conf;
-            tr[7] = Math.Min(tr[7] + 1, 30); // hits++
-            tr[8] = 0; // miss = 0
+
+            // Резкий скачок bbox не принимаем полностью за 1 кадр: это главный источник дрожания aim-point.
+            float rawVx = (d.Cx - tr[0]) / dt;
+            float rawVy = (d.Cy - tr[1]) / dt;
+            float rawSpd = MathF.Sqrt(rawVx * rawVx + rawVy * rawVy);
+            if (rawSpd > 2200f && tr[7] >= 2)
+            {
+                rawVx *= 0.35f;
+                rawVy *= 0.35f;
+            }
+
+            float velAlpha = 0.45f;
+            tr[2] = velAlpha * rawVx + (1f - velAlpha) * tr[2];
+            tr[3] = velAlpha * rawVy + (1f - velAlpha) * tr[3];
+            tr[2] = Math.Clamp(tr[2], -1200f, 1200f);
+            tr[3] = Math.Clamp(tr[3], -900f, 900f);
+
+            float a = Math.Clamp(DetectionSmoothAlpha, 0.05f, 0.85f);
+            if (tr[7] < 2) a = Math.Max(a, 0.65f); // первые кадры быстрее цепляемся
+            tr[0] = a * d.Cx + (1f - a) * tr[0];
+            tr[1] = a * d.Cy + (1f - a) * tr[1];
+            tr[4] = a * (d.X2 - d.X1) + (1f - a) * tr[4];
+            tr[5] = a * (d.Y2 - d.Y1) + (1f - a) * tr[5];
+            tr[6] = 0.55f * d.Conf + 0.45f * tr[6];
+            tr[7] = Math.Min(tr[7] + 1, 30);
+            tr[8] = 0;
         }
-        // Новые треки для нематченных детекций
+
+        // Новые треки для нематченных детекций.
         for (int i = 0; i < dets.Count; i++)
-            if (!matched[i] && dets[i].Conf >= 0.25f)
-                _tracks.Add([dets[i].Cx, dets[i].Cy, 0f, 0f,
-                         dets[i].X2 - dets[i].X1, dets[i].Y2 - dets[i].Y1,
-                         dets[i].Conf, 1f, 0f]);
+        {
+            if (matched[i] || dets[i].Conf < Math.Max(0.12f, ConfThresh * 0.35f)) continue;
+            var d = dets[i];
+            _tracks.Add([d.Cx, d.Cy, 0f, 0f,
+                d.X2 - d.X1, d.Y2 - d.Y1,
+                d.Conf, 1f, 0f]);
+        }
 
         _tracks.RemoveAll(tr => tr[8] > SF_MISS);
-        if (ConfirmFrames == 0) return dets;
-        return dets.Where((d, i) =>
-            _tracks.Any(tr => tr[8] == 0 && (int)tr[7] >= ConfirmFrames &&
-                MathF.Sqrt((d.Cx - tr[0]) * (d.Cx - tr[0]) + (d.Cy - tr[1]) * (d.Cy - tr[1])) < SF_MAX_DIST / 2))
-            .ToList();
+
+        int minHits = Math.Max(1, ConfirmFrames);
+        var stable = new List<Detection>(Math.Min(_tracks.Count, 16));
+        foreach (var tr in _tracks)
+        {
+            if (tr[8] != 0 || (int)tr[7] < minHits) continue;
+            float w = Math.Max(2f, tr[4]);
+            float h = Math.Max(2f, tr[5]);
+            stable.Add(new Detection(
+                tr[0] - w * 0.5f,
+                tr[1] - h * 0.5f,
+                tr[0] + w * 0.5f,
+                tr[1] + h * 0.5f,
+                tr[6],
+                _screenCx, _screenCy));
+        }
+
+        // Важно: если трекер ещё не успел подтвердить цель, не гасим детекцию полностью.
+        // Иначе визуально кажется, что "модель перестала видеть" цели.
+        if (stable.Count == 0 && dets.Count > 0)
+            return dets;
+
+        return stable;
     }
     // ── Target selection ──────────────────────────────────────────────────────
+    private void UpdateTargetLock(Detection d, float alpha)
+    {
+        if (!_hasTargetLock || alpha >= 0.999f)
+        {
+            _lockedAimX = d.AimX;
+            _lockedAimY = d.AimY;
+            _lockedX1 = d.X1; _lockedY1 = d.Y1; _lockedX2 = d.X2; _lockedY2 = d.Y2;
+            _hasTargetLock = true;
+            _targetLockMissFrames = 0;
+            return;
+        }
+
+        _lockedAimX = alpha * d.AimX + (1f - alpha) * _lockedAimX;
+        _lockedAimY = alpha * d.AimY + (1f - alpha) * _lockedAimY;
+        _lockedX1 = alpha * d.X1 + (1f - alpha) * _lockedX1;
+        _lockedY1 = alpha * d.Y1 + (1f - alpha) * _lockedY1;
+        _lockedX2 = alpha * d.X2 + (1f - alpha) * _lockedX2;
+        _lockedY2 = alpha * d.Y2 + (1f - alpha) * _lockedY2;
+        _targetLockMissFrames = 0;
+        _pendingSwitchFrames = 0;
+    }
+
+    private float LockedIoU(Detection d)
+    {
+        float ix = Math.Max(0f, Math.Min(d.X2, _lockedX2) - Math.Max(d.X1, _lockedX1));
+        float iy = Math.Max(0f, Math.Min(d.Y2, _lockedY2) - Math.Max(d.Y1, _lockedY1));
+        float inter = ix * iy;
+        float areaD = Math.Max(1f, (d.X2 - d.X1) * (d.Y2 - d.Y1));
+        float areaL = Math.Max(1f, (_lockedX2 - _lockedX1) * (_lockedY2 - _lockedY1));
+        return inter / Math.Max(1f, areaD + areaL - inter);
+    }
+
+    private bool IsLockedHitboxHeightCollapsed(Detection d)
+    {
+        if (!SwitchOnHitboxHeightCollapse || !_hasTargetLock) return false;
+        float oldH = Math.Max(1f, _lockedY2 - _lockedY1);
+        float newH = Math.Max(1f, d.Y2 - d.Y1);
+        float ratio = Math.Max(1.1f, HitboxHeightCollapseRatio);
+        return oldH >= HitboxHeightCollapseMinPrevH && newH * ratio < oldH;
+    }
+
     private Detection? PickTarget(List<Detection> dets)
     {
         var stable = StabilityFilter(dets);
         var cands = stable.Where(d => d.Dist <= FovRadius).ToList();
-        if (cands.Count == 0) { _manualLock = false; return null; }
 
-        var lt = LastTarget;
+        // Fallback: если сглаженный трек временно вылетел из FOV/не подтвердился,
+        // используем сырые detections вместо полного пропадания цели.
+        if (cands.Count == 0 && !ReferenceEquals(stable, dets))
+            cands = dets.Where(d => d.Dist <= FovRadius).ToList();
+
+        if (cands.Count == 0)
+        {
+            _manualLock = false;
+            // No detections this frame: keep current ghost/lock for a short grace period.
+            // This prevents instant re-locking to a neighbour when the old target flickers out.
+            if (++_targetLockMissFrames > TargetLockMaxMissFrames)
+                _hasTargetLock = false;
+            return null;
+        }
+
+        Detection? lt;
+        bool hasAnchor;
+        float anchorX, anchorY;
+        lock (_stateLock)
+        {
+            lt = _lastTarget;
+            hasAnchor = _ghostTarget != null;
+            anchorX = hasAnchor ? _anchorLastRealX : (lt?.AimX ?? (_hasTargetLock ? _lockedAimX : 0f));
+            anchorY = hasAnchor ? _anchorLastRealY : (lt?.AimY ?? (_hasTargetLock ? _lockedAimY : 0f));
+        }
+
+        float Score(Detection d, bool sticky)
+        {
+            float fov = Math.Max(1f, FovRadius);
+            float dist01 = Math.Clamp(d.Dist / fov, 0f, 1f);
+            float distScore = 1f - dist01;
+            float sizeBonus = PrioritySize
+                ? Math.Clamp(MathF.Sqrt(Math.Max(1f, d.Area)) / 25f, 0.55f, 2.4f)
+                : 1f;
+            float anchorBonus = 1f;
+            if (hasAnchor || lt != null || _hasTargetLock)
+            {
+                float da = MathF.Sqrt((d.AimX - anchorX) * (d.AimX - anchorX) + (d.AimY - anchorY) * (d.AimY - anchorY));
+                anchorBonus = 1f + 0.55f * (1f - Math.Clamp(da / Math.Max(40f, StickyRadiusPx), 0f, 1f));
+            }
+            float lockBonus = 1f;
+            if (_hasTargetLock)
+            {
+                float dl = MathF.Sqrt((d.AimX - _lockedAimX) * (d.AimX - _lockedAimX) + (d.AimY - _lockedAimY) * (d.AimY - _lockedAimY));
+                lockBonus = 1f + 0.85f * (1f - Math.Clamp(dl / Math.Max(40f, TargetLockRadiusPx), 0f, 1f));
+            }
+            float edgePenalty = dist01 > 0.92f ? 0.70f : 1f;
+            float stickyBonus = sticky ? 1.25f : 1f;
+            return d.Conf * (0.20f + 0.80f * distScore * distScore) * sizeBonus * anchorBonus * lockBonus * edgePenalty * stickyBonus;
+        }
+
+        Detection? chosen = null;
+
+        // Ручное переключение: некоторое время держим ближайшую к выбранной цели.
         if (_manualLock && Ts() < _manualLockUntil && lt != null)
         {
-            var best = cands.MinBy(d => MathF.Sqrt((d.Cx - lt.Cx) * (d.Cx - lt.Cx) + (d.Cy - lt.Cy) * (d.Cy - lt.Cy)));
-            if (best != null && MathF.Sqrt((best.Cx - lt.Cx) * (best.Cx - lt.Cx) + (best.Cy - lt.Cy) * (best.Cy - lt.Cy)) < 60)
-                return best;
-            _manualLock = false;
+            var lockedManual = cands.MinBy(d => MathF.Sqrt((d.Cx - lt.Cx) * (d.Cx - lt.Cx) + (d.Cy - lt.Cy) * (d.Cy - lt.Cy)));
+            if (lockedManual != null && MathF.Sqrt((lockedManual.Cx - lt.Cx) * (lockedManual.Cx - lt.Cx) + (lockedManual.Cy - lt.Cy) * (lockedManual.Cy - lt.Cy)) < StickyRadiusPx)
+                chosen = lockedManual;
+            else
+                _manualLock = false;
         }
         else _manualLock = false;
 
-        // Якорь по последней РЕАЛЬНОЙ позиции (не ghost-экстраполяция)
-        bool hasAnchor = _ghostTarget != null;
-        float anchorX = hasAnchor ? _anchorLastRealX : (lt?.AimX ?? 0);
-        float anchorY = hasAnchor ? _anchorLastRealY : (lt?.AimY ?? 0);
+        var best = cands.MaxBy(d => Score(d, false));
+        if (best == null) return null;
 
-        if (hasAnchor || lt != null)
+        if (chosen == null && TargetLockEnabled && _hasTargetLock)
         {
-            return cands.MaxBy(d =>
+            // STRICT anti-flicker: while locked, only accept a candidate that looks like the SAME bbox.
+            // Do not use the large lock radius for reacquire; it can catch a neighbour.
+            Detection? lockedCand = null;
+            float bestLockScore = float.NegativeInfinity;
+            float reacquireR = Math.Max(12f, TargetReacquireRadiusPx);
+            float reacquireR2 = reacquireR * reacquireR;
+            float minIou = Math.Clamp(TargetLockMinIoU, 0f, 0.95f);
+
+            foreach (var d in cands)
             {
-                float distScore = 1f - MathF.Min(d.Dist / FovRadius, 1f);
-                float dToAnchor = MathF.Sqrt((d.AimX - anchorX) * (d.AimX - anchorX) + (d.AimY - anchorY) * (d.AimY - anchorY));
-                float inertia = dToAnchor < 40f ? 1.35f : 1f;
-                float sizeBonus = PrioritySize ? MathF.Sqrt(d.Area) / 25f : 1f;
-                return d.Conf * distScore * distScore * inertia * sizeBonus;
-            });
+                float dx = d.AimX - _lockedAimX;
+                float dy = d.AimY - _lockedAimY;
+                float d2 = dx * dx + dy * dy;
+                float iou = LockedIoU(d);
+
+                // Candidate must either overlap old bbox or be very close to previous locked aim point.
+                // Otherwise it is treated as another person and ignored while lock is alive.
+                if (iou < minIou && d2 > reacquireR2) continue;
+
+                float lockScore = iou * 100000f - d2;
+                if (lockScore > bestLockScore)
+                {
+                    bestLockScore = lockScore;
+                    lockedCand = d;
+                }
+            }
+
+            if (lockedCand != null)
+            {
+                if (Ts() >= _targetSwitchCooldownUntil && IsLockedHitboxHeightCollapsed(lockedCand) && cands.Count > 1)
+                {
+                    // Optional mechanic, disabled by default. Kept conservative.
+                    Detection? replacement = null;
+                    float replacementScore = float.NegativeInfinity;
+                    float collapsedH = Math.Max(1f, lockedCand.Y2 - lockedCand.Y1);
+                    foreach (var d in cands)
+                    {
+                        if (ReferenceEquals(d, lockedCand)) continue;
+                        if (IsLockedHitboxHeightCollapsed(d)) continue;
+                        float dh = Math.Max(1f, d.Y2 - d.Y1);
+                        if (dh < collapsedH * 1.35f) continue;
+                        float sc = Score(d, false);
+                        if (sc > replacementScore)
+                        {
+                            replacementScore = sc;
+                            replacement = d;
+                        }
+                    }
+
+                    if (replacement != null)
+                    {
+                        chosen = replacement;
+                        _hasTargetLock = false;
+                        _targetSwitchCooldownUntil = Ts() + 0.30;
+                    }
+                    else chosen = lockedCand;
+                }
+                else
+                {
+                    // Hard lock means: if the same target is visible, never score-switch to neighbours.
+                    chosen = lockedCand;
+                }
+                _targetLockMissFrames = 0;
+            }
+            else if (TargetLockHard)
+            {
+                // Locked target disappeared, but other candidates exist.
+                // Do NOT stand for long: wait a very short grace, then require the same
+                // replacement candidate to be stable for a few frames and switch.
+                _targetLockMissFrames++;
+
+                float pdx = best.AimX - _pendingSwitchAimX;
+                float pdy = best.AimY - _pendingSwitchAimY;
+                float confirmR = Math.Max(10f, TargetSwitchConfirmRadiusPx);
+                if (_pendingSwitchFrames == 0 || pdx * pdx + pdy * pdy > confirmR * confirmR)
+                {
+                    _pendingSwitchAimX = best.AimX;
+                    _pendingSwitchAimY = best.AimY;
+                    _pendingSwitchFrames = 1;
+                }
+                else
+                {
+                    _pendingSwitchFrames++;
+                }
+
+                int grace = Math.Min(TargetLockHoldFrames, TargetLockMaxMissFrames);
+                if (_targetLockMissFrames <= grace || _pendingSwitchFrames < TargetSwitchConfirmFrames)
+                    return null;
+
+                _hasTargetLock = false;
+                chosen = best; // confirmed replacement in this frame, no long freeze
+            }
         }
 
-        // Без якоря: сильно favourим ближайшую
-        return cands.MaxBy(d =>
+        if (chosen == null && lt != null && !_hasTargetLock)
         {
-            float distScore = 1f - MathF.Min(d.Dist / FovRadius, 1f);
-            float sizeBonus = PrioritySize ? MathF.Sqrt(d.Area) / 25f : 1f;
-            return d.Conf * distScore * distScore * sizeBonus;
-        });
+            // Второй слой sticky по последней реальной позиции, если lock ещё не успел сформироваться.
+            var sticky = cands.MinBy(d => MathF.Sqrt((d.AimX - lt.AimX) * (d.AimX - lt.AimX) + (d.AimY - lt.AimY) * (d.AimY - lt.AimY)));
+            if (sticky != null)
+            {
+                float ds = MathF.Sqrt((sticky.AimX - lt.AimX) * (sticky.AimX - lt.AimX) + (sticky.AimY - lt.AimY) * (sticky.AimY - lt.AimY));
+                if (ds <= StickyRadiusPx)
+                {
+                    float stickyScore = Score(sticky, true);
+                    float bestScore = Score(best, false);
+                    chosen = stickyScore * StickySwitchRatio >= bestScore ? sticky : best;
+                }
+            }
+        }
+
+        chosen ??= best;
+
+        // Обновляем lock-якорь плавно, чтобы он следовал за целью, но не прыгал между людьми.
+        if (TargetLockEnabled)
+            UpdateTargetLock(chosen, _hasTargetLock ? 0.25f : 1f);
+
+        return chosen;
     }
 
     public void SwitchTarget()
@@ -1227,6 +1755,7 @@ oldOvSess?.Dispose();
         if (lt != null) cur = cands.FindIndex(d => MathF.Abs(d.Cx - lt.Cx) < 15 && MathF.Abs(d.Cy - lt.Cy) < 15);
         if (cur < 0) cur = 0;
         LastTarget = cands[(cur + 1) % cands.Count];
+        UpdateTargetLock(LastTarget, 1f);
         _manualLock = true; _manualLockUntil = Ts() + 1.0;
     }
 
@@ -1243,16 +1772,17 @@ oldOvSess?.Dispose();
             velX = _velX;
             velY = _velY;
             dt = PredictDt;
-            totalYOffset = TotalYOffset;
+            totalYOffset = GetAimYOffsetForTarget(t);
             isGhost = _realTarget == null && _ghostTarget != null;
         }
-        float aimX = t.AimX + velX * dt;
-        float aimY = t.AimY + velY * dt + totalYOffset;
+        var (predX, predY) = ClampPrediction(velX * dt, velY * dt);
+        float aimX = GetAimXForTarget(t) + predX;
+        float aimY = t.AimY + predY + totalYOffset;
         return GetAimDeltaForPoint(aimX, aimY, strength, maxStep, isGhost);
     }
 
-    // Внешняя точка входа для MouseLogic: сглаживаем ТОЧКУ цели, а не вектор движения.
-    // Это убирает маятник, который давала двухзвенная система (EMA на скорость + интегратор положения).
+    // Внешняя точка входа для MouseLogic: считает сырой шаг к заданной точке.
+    // Финальный anti-pendulum контроллер живёт в MouseLogic и сглаживает только скаляр скорости.
     public (float dx, float dy) GetAimDeltaForPoint(float aimX, float aimY, float strength, float maxStep, bool isGhost = false)
     {
         // Ghost: уменьшаем силу наведения чтобы не дёргать к устаревшей позиции
@@ -1271,11 +1801,18 @@ oldOvSess?.Dispose();
         float dx = aimX - _screenCx;
         float dy = aimY - _screenCy;
         float dist = MathF.Sqrt(dx * dx + dy * dy);
-        float stop = Math.Max(0.5f, StopDist);
+        float movingSpeed;
+        lock (_stateLock) movingSpeed = _targetSpeed;
+        // If target is moving, a large stop zone makes aim permanently lag behind.
+        float stop = movingSpeed > 20f ? Math.Min(Math.Max(0.5f, StopDist), 1.0f) : Math.Max(0.5f, StopDist);
         if (dist < stop) return (0, 0);
 
-        // Линейная формула без snap-эффекта
-        float step = dist * effectiveStrength;
+        // Smoothstep для дальних целей + линейное сближение вблизи.
+        // Это сохраняет быстрый заход, но не даёт snap/перелёта около stop-зоны.
+        const float transition = 100f;
+        float norm = Math.Clamp((dist - stop) / transition, 0f, 1f);
+        float ease = norm * norm * (3f - 2f * norm);
+        float step = Math.Max(ease * dist * effectiveStrength, (dist - stop) * effectiveStrength);
         step = MathF.Min(step, maxStep);
         step = MathF.Min(step, dist - stop); // никогда не перелетаем
         step = MathF.Max(step, 0f);
@@ -1292,7 +1829,8 @@ oldOvSess?.Dispose();
             var t = _lastTarget;
             if (t == null) return (0, 0);
             float dt = PredictDt;
-            return (t.AimX + _velX * dt - _screenCx, t.AimY + _velY * dt + TotalYOffset - _screenCy);
+            var (predX, predY) = ClampPrediction(_velX * dt, _velY * dt);
+            return (GetAimXForTarget(t) + predX - _screenCx, t.AimY + predY + GetAimYOffsetForTarget(t) - _screenCy);
         }
     }
 
@@ -1303,7 +1841,7 @@ oldOvSess?.Dispose();
         {
             var t = _realTarget;
             if (t == null) return false;
-            float dx = t.AimX - _screenCx, dy = t.AimY + TotalYOffset - _screenCy;
+            float dx = GetAimXForTarget(t) - _screenCx, dy = t.AimY + GetAimYOffsetForTarget(t) - _screenCy;
             return dx * dx + dy * dy <= tolerance * tolerance;
         }
     }
