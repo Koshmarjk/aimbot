@@ -1,6 +1,7 @@
 
 # CV_demo — Real-time Object Detection Pipeline
-<img width="1449" height="1205" alt="image" src="https://github.com/user-attachments/assets/1661db79-54e3-420a-8e25-a8a61b52be7b" />
+<img width="509" height="313" alt="image" src="https://github.com/user-attachments/assets/07060a86-b22d-4c85-8372-0026a3d44cfa" />
+
 ## Star History
 If you find this project useful, please ⭐ star the repo!
 Native C# / .NET 8 / WPF implementation of a low-latency computer vision pipeline.  
