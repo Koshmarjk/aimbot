@@ -1,5 +1,5 @@
 # CV_demo — Real-time Object Detection Pipeline
-<img width="471" height="235" alt="image" src="https://github.com/user-attachments/assets/b551f7b7-aebd-4d05-a035-c8e653c45aa7" />
+<img width="384" height="124" alt="image" src="https://github.com/user-attachments/assets/fa46b308-f27f-4cdb-8d2f-c49bd9c5795c" />
 
 ## Star History
 If you find this project useful, please ⭐ star the repo!
