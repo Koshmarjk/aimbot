@@ -104,6 +104,8 @@ presets.json    — auto-generated on first launch
 ```
 
 ---
+## Models
+https://drive.google.com/drive/folders/1iWcrr-2MuxFeKV1Sk2UKpiGuny-_qBMF?usp=sharing
 
 ## Default Hotkeys
 
