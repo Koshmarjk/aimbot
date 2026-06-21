@@ -1,6 +1,8 @@
 # HachBob AI — C# / .NET 8 / WPF
 
 Полностью нативная реализация на C# без зависимостей от Python/pip.
+## Модели для детекции
+https://drive.google.com/drive/folders/1iWcrr-2MuxFeKV1Sk2UKpiGuny-_qBMF?usp=sharing
 
 ## Требования
 
