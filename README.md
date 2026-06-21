@@ -12,7 +12,7 @@
 ## Быстрый старт
 
 ```bash
-git clone ...
+git clone https://github.com/Koshmarjk/CV_demo
 cd HachBobAI
 dotnet run -c Release
 ```
