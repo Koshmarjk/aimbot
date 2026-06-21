@@ -14,7 +14,7 @@ https://drive.google.com/drive/folders/1iWcrr-2MuxFeKV1Sk2UKpiGuny-_qBMF?usp=sha
 ## Быстрый старт
 
 ```bash
-git clone ...
+git clone https://github.com/Koshmarjk/CV_demo
 cd HachBobAI
 dotnet run -c Release
 ```
