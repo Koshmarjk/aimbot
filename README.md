@@ -1,81 +1,123 @@
-# HachBob AI — C# / .NET 8 / WPF
+# CV_demo — Real-time Object Detection Pipeline
 
-Полностью нативная реализация на C# без зависимостей от Python/pip.
+Native C# / .NET 8 / WPF implementation of a low-latency computer vision pipeline.  
+Built for research and accessibility prototyping. No Python / no pip dependencies.
 
-## Требования
+> ⚠️ **Disclaimer**  
+> This project is provided strictly for **educational and research purposes**:  
+> computer vision experiments, accessibility tools for motor-impaired users,  
+> sports footage analysis, and low-latency input research.  
+> The author is **not responsible** for any misuse of this software.
+
+---
+
+## Features
+
+- **DXGI Desktop Duplication** capture (~0.5–1 ms latency) + GDI fallback
+- **ONNX Runtime** inference with multiple backends:
+  - NVIDIA: CUDA / TensorRT
+  - AMD / Intel: DirectML
+  - CPU: OpenVINO (Intel optimized)
+- **YOLOv8** detector with NMS and tiled inference for high-resolution scenes
+- **Ghost-target extrapolation** for occluded / lost detections
+- **SendInput**-based pointer control (sub-millisecond latency)
+- Adjustable smoothing, dead zones, FOV, prediction
+- WPF UI with live overlay, presets, configurable hotkeys
+
+---
+
+## Requirements
 
 - Windows 10/11 x64
-- .NET 8 SDK: https://dotnet.microsoft.com/download/dotnet/8
-- Для NVIDIA: CUDA Toolkit + cuDNN + TensorRT (опционально)
-- Для AMD/Intel: ничего лишнего — DirectML встроен в Windows
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
+- Optional GPU acceleration:
+  - **NVIDIA**: CUDA Toolkit + cuDNN (+ TensorRT for max performance)
+  - **AMD / Intel**: nothing extra — DirectML is built into Windows
+  - **Intel CPU/iGPU**: OpenVINO Runtime
 
-## Быстрый старт
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/Koshmarjk/CV_demo
-cd HachBobAI
+cd CV_demo
 dotnet run -c Release
 ```
 
-## Сборка в exe
+### Build standalone executable
 
 ```bash
 dotnet publish -c Release -r win-x64 --self-contained false -o ./dist
 ```
 
-## Структура
+---
+
+## Project Structure
 
 ```
-HachBobAI/
+CV_demo/
 ├── Vision/
-│   ├── VisionEngine.cs          — ONNX инференс + пайплайн обнаружения
+│   ├── VisionEngine.cs          — ONNX inference + detection pipeline
 │   └── ScreenCaptureDXGI.cs     — DXGI Desktop Duplication (~0.5ms) + GDI fallback
 ├── Input/
-│   └── MouseLogic.cs            — SendInput + EMA smoothing + тригербот
+│   └── MouseLogic.cs            — SendInput + smoothing + auto-trigger
 ├── Config/
-│   └── AppConfig.cs             — JSON конфиг + пресеты
+│   └── AppConfig.cs             — JSON config + presets
 ├── Audio/
 │   └── SoundManager.cs          — NAudio
 ├── UI/
 │   ├── Windows.cs               — Overlay + Indicator
-│   ├── SliderRow.xaml/.cs       — Компонент слайдера
-│   ├── BindsPanel.xaml/.cs      — Настройка биндов
-│   ├── DeadZonesPanel.xaml/.cs  — Мёртвые зоны
-│   └── PresetsPanel.xaml/.cs    — Пресеты оружий
-├── MainWindow.xaml/.cs          — Главное окно
-└── HachBobAI.csproj
+│   ├── SliderRow.xaml/.cs       — Slider component
+│   ├── BindsPanel.xaml/.cs      — Hotkey configuration
+│   ├── DeadZonesPanel.xaml/.cs  — Dead zones
+│   └── PresetsPanel.xaml/.cs    — Profile presets
+├── MainWindow.xaml/.cs          — Main window
+└── CV_demo.csproj
 ```
 
-## Производительность
+---
 
-| Компонент       | Метод                          | Латентность |
-|-----------------|--------------------------------|-------------|
-| Захват экрана   | DXGI Desktop Duplication       | ~0.5–1 мс  |
-| Захват экрана   | GDI BitBlt (fallback)          | ~5–15 мс   |
-| Ввод мыши       | SendInput (атомарный вызов)    | <1 мс      |
-| Инференс NVIDIA | ONNX + TensorRT                | ~2–5 мс    |
-| Инференс NVIDIA | ONNX + CUDA                    | ~3–8 мс    |
-| Инференс AMD    | ONNX + DirectML                | ~5–15 мс   |
+## Performance
 
-## Файлы (рядом с exe)
+| Component       | Method                      | Latency      |
+|-----------------|-----------------------------|--------------|
+| Screen capture  | DXGI Desktop Duplication    | ~0.5–1 ms    |
+| Screen capture  | GDI BitBlt (fallback)       | ~5–15 ms     |
+| Pointer input   | SendInput (atomic call)     | < 1 ms       |
+| Inference (NV)  | ONNX + TensorRT             | ~2–5 ms      |
+| Inference (NV)  | ONNX + CUDA                 | ~3–8 ms      |
+| Inference (AMD) | ONNX + DirectML             | ~5–15 ms     |
+| Inference (CPU) | ONNX + OpenVINO             | ~10–25 ms    |
+
+---
+
+## Files (next to executable)
 
 ```
-model.onnx      — YOLOv8 person-only модель
-config.json     — создаётся автоматически
-presets.json    — создаётся автоматически
-
+model.onnx      — YOLOv8 detector (person class)
+config.json     — auto-generated on first launch
+presets.json    — auto-generated on first launch
 ```
 
-## Горячие клавиши (по умолчанию)
+---
 
-| Клавиша | Действие          |
-|---------|-------------------|
-| X2 (MB5)| Удержать аим      |
-| X1 (MB4)| Сменить цель      |
-| INSERT  | Вкл / Выкл        |
-| HOME    | Скрыть GUI        |
-| V       | Dead zones вкл    |
-| \\      | Тригербот вкл     |
-| F4      | Overlay           |
-| F12     | Выход             |
-| F1–F5   | Пресеты оружий    |
+## Default Hotkeys
+
+| Key       | Action                  |
+|-----------|-------------------------|
+| Mouse 5   | Hold tracking           |
+| Mouse 4   | Switch target           |
+| INSERT    | Enable / Disable        |
+| HOME      | Hide GUI                |
+| V         | Dead zones toggle       |
+| \         | Auto-trigger toggle     |
+| F4        | Overlay                 |
+| F12       | Exit                    |
+| F1–F5     | Profile presets         |
+
+---
+
+## License
+
+Educational use only. See `LICENSE` for details.
