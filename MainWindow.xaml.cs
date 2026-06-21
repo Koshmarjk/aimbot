@@ -179,6 +179,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 vs.NumaPinning, vs.NumaCores,
                 vs.DmlDeviceId);
             _vision.AimYOffsetPercent = (float)vs.AimYOffset;
+            _vision.SetDetectionClass(vs.DetectionClass);
             _vision.PredictionStr   = (float)vs.Prediction;
             _vision.ConfirmFrames   = vs.ConfirmFrames;
             _vision.StopDist        = (float)vs.StopDist;
@@ -282,6 +283,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _mouse.TbTolerance = (float)_cfg.Triggerbot.Tolerance;
         _mouse.TbDelayMin  = (float)_cfg.Triggerbot.DelayMin / 1000f;
         _mouse.TbDelayMax  = (float)_cfg.Triggerbot.DelayMax / 1000f;
+        _mouse.TbTargetSwitchDelayMs  = (float)_cfg.Triggerbot.TargetSwitchDelayMs;
+        _mouse.TbTargetSwitchRadiusPx = (float)_cfg.Triggerbot.TargetSwitchRadiusPx;
         _mouse.TbAimOnly   = _cfg.Triggerbot.AimOnly;
 
         SyncBinds();
@@ -301,7 +304,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _cfg.Triggerbot.Enabled = _mouse.TbEnabled;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TbCfg)));
         });
-        _mouse.OnDetectionClassToggle = _ => Dispatcher.Invoke(UpdateClassUi);
+        _mouse.OnDetectionClassToggle = cls => Dispatcher.Invoke(() =>
+        {
+            _cfg.Vision.DetectionClass = cls;
+            UpdateClassUi();
+            _dirty = true;
+        });
         _mouse.OnRangefinderToggle = () => Dispatcher.Invoke(() =>
         {
             _cfg.Rangefinder.Enabled = _mouse.RfEnabled;
@@ -362,7 +370,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ? (_presets[_activePreset].Bind?.ToUpper() ?? "") : "";
         // FPS display
         if (_vision != null)
-            FpsLabel.Content = $"{_vision.Fps:F0} FPS  [{_vision.ProviderName}]";
+            FpsLabel.Content = $"{_vision.Fps:F0} FPS  [{_vision.ProviderName}]  [{_vision.ActiveClassName}]";
         else
         {
             System.IO.File.AppendAllText("debug.log",
@@ -378,7 +386,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         // FPS display
         if (_vision != null)
-            FpsLabel.Content = $"{_vision.Fps:F0} FPS  [{_vision.ProviderName}]";
+            FpsLabel.Content = $"{_vision.Fps:F0} FPS  [{_vision.ProviderName}]  [{_vision.ActiveClassName}]";
     }
 
     // ── Presets ───────────────────────────────────────────────────────────────
@@ -436,6 +444,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _cfg.Triggerbot.Tolerance = p.TbTolerance;
         _cfg.Triggerbot.DelayMin  = p.TbDelayMin;
         _cfg.Triggerbot.DelayMax  = p.TbDelayMax;
+        _cfg.Triggerbot.TargetSwitchDelayMs  = p.TbTargetSwitchDelayMs;
+        _cfg.Triggerbot.TargetSwitchRadiusPx = p.TbTargetSwitchRadiusPx;
         _cfg.Triggerbot.AimOnly   = p.TbAimOnly;
         _cfg.Triggerbot.Enabled   = p.TbEnabled;
 
@@ -458,6 +468,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _mouse.TbTolerance = (float)p.TbTolerance;
         _mouse.TbDelayMin  = (float)p.TbDelayMin / 1000f;
         _mouse.TbDelayMax  = (float)p.TbDelayMax / 1000f;
+        _mouse.TbTargetSwitchDelayMs  = (float)p.TbTargetSwitchDelayMs;
+        _mouse.TbTargetSwitchRadiusPx = (float)p.TbTargetSwitchRadiusPx;
         _mouse.TbAimOnly   = p.TbAimOnly;
 
         if (p.RangefinderEnabled && p.Rangefinder.Count > 0)
@@ -562,6 +574,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             p.TbTolerance   = _cfg.Triggerbot.Tolerance;
             p.TbDelayMin    = _cfg.Triggerbot.DelayMin;
             p.TbDelayMax    = _cfg.Triggerbot.DelayMax;
+            p.TbTargetSwitchDelayMs  = _cfg.Triggerbot.TargetSwitchDelayMs;
+            p.TbTargetSwitchRadiusPx = _cfg.Triggerbot.TargetSwitchRadiusPx;
             p.TbAimOnly     = _cfg.Triggerbot.AimOnly;
             p.TbEnabled     = _cfg.Triggerbot.Enabled;
             Console.WriteLine($"[save] Пресет '{p.Name}' обновлён из текущих настроек");
@@ -662,8 +676,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OnClassToggleClick(object sender, RoutedEventArgs e)
     {
         if (_vision == null) return;
-        _vision.ToggleDetectionClass();
+        int cls = _vision.ToggleDetectionClass();
+        _cfg.Vision.DetectionClass = cls;
         UpdateClassUi();
+        _dirty = true;
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -727,6 +743,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OnTbDelayMaxChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     { if (_initUi) return; _cfg.Triggerbot.DelayMax = e.NewValue; _mouse.TbDelayMax = (float)e.NewValue / 1000f; _dirty = true; }
+
+    private void OnTbTargetSwitchDelayChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (_initUi) return; _cfg.Triggerbot.TargetSwitchDelayMs = e.NewValue; _mouse.TbTargetSwitchDelayMs = (float)e.NewValue; _dirty = true; }
+
+    private void OnTbTargetSwitchRadiusChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    { if (_initUi) return; _cfg.Triggerbot.TargetSwitchRadiusPx = e.NewValue; _mouse.TbTargetSwitchRadiusPx = (float)e.NewValue; _dirty = true; }
 
     private void OnTbEnabledChanged(object sender, RoutedEventArgs e)
     {

@@ -130,6 +130,8 @@ public partial class PresetsPanel : UserControl
             ("TbTolerance",   "Радиус триггера",      1.0,  200.0,"F0"),
             ("TbDelayMin",    "Задержка мин (мс)",    0.0,  500.0,"F0"),
             ("TbDelayMax",    "Задержка макс (мс)",   0.0,  500.0,"F0"),
+            ("TbTargetSwitchDelayMs",  "Задержка смены цели", 0.0, 500.0,"F0"),
+            ("TbTargetSwitchRadiusPx", "Радиус смены цели",   1.0, 300.0,"F0"),
         };
 
         int rows = (int)Math.Ceiling(fields.Length / 2.0);

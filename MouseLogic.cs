@@ -24,8 +24,8 @@ public sealed class MouseLogic : IDisposable
     public float TbDelayMax  { get; set; } = 0f;
     public bool  TbAimOnly   { get; set; } = true;
     // Delay after switching/acquiring a different real target before triggerbot may fire.
-    public float TbTargetSwitchDelayMs  { get; set; } = 20f;
-    public float TbTargetSwitchRadiusPx { get; set; } = 80f;
+    public float TbTargetSwitchDelayMs  { get; set; } = 130f;
+    public float TbTargetSwitchRadiusPx { get; set; } = 10f;
     // false = first acquire can fire instantly; delay applies only when switching from one target to another.
     public bool  TbDelayOnFirstAcquire { get; set; } = false;
 

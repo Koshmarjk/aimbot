@@ -1694,8 +1694,8 @@ oldOvSess?.Dispose();
             else if (TargetLockHard)
             {
                 // Locked target disappeared, but other candidates exist.
-                // Do NOT stand for long: wait a very short grace, then require the same
-                // replacement candidate to be stable for a few frames and switch.
+                // Rollback of the over-strict far-switch block: do not freeze forever.
+                // Hold ghost briefly only while it is alive, then switch to a confirmed replacement.
                 _targetLockMissFrames++;
 
                 float pdx = best.AimX - _pendingSwitchAimX;
@@ -1712,12 +1712,13 @@ oldOvSess?.Dispose();
                     _pendingSwitchFrames++;
                 }
 
+                bool ghostAlive = _ghostTarget != null && _ghostFrames < GhostMaxFrames;
                 int grace = Math.Min(TargetLockHoldFrames, TargetLockMaxMissFrames);
-                if (_targetLockMissFrames <= grace || _pendingSwitchFrames < TargetSwitchConfirmFrames)
+                if (ghostAlive && (_targetLockMissFrames <= grace || _pendingSwitchFrames < TargetSwitchConfirmFrames))
                     return null;
 
                 _hasTargetLock = false;
-                chosen = best; // confirmed replacement in this frame, no long freeze
+                chosen = best; // confirmed/available replacement in this frame, no long freeze
             }
         }
 

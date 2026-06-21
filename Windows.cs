@@ -170,16 +170,21 @@ public sealed class OverlayWindow : Window
             Canvas.SetLeft(lbl, d.X1 + 2); Canvas.SetTop(lbl, d.Y1 + 2);
             _canvas.Children.Add(lbl); _dyn.Add(lbl);
 
-            // Линия от центра до цели (только внутри FOV)
+            // Линии от центра к детектам:
+            // активный — яркая зелёная, неактивные — красные пунктирные.
             if (d.Dist <= _engine.FovRadius)
             {
-                var lineCol = Color.FromArgb(isTgt ? (byte)60 : (byte)18, col.R, col.G, col.B);
+                float lx = _engine.GetAimXForTarget(d);
+                float ly = d.AimY + _engine.GetAimYOffsetForTarget(d);
+                var lineCol = isTgt
+                    ? Color.FromArgb(220, 0, 255, 157)
+                    : Color.FromArgb(150, 255, 45, 45);
                 AddDyn(new Line
                 {
-                    X1 = cx, Y1 = cy, X2 = d.Cx, Y2 = d.Cy,
+                    X1 = cx, Y1 = cy, X2 = lx, Y2 = ly,
                     Stroke = new SolidColorBrush(lineCol),
-                    StrokeThickness = isTgt ? 1.0 : 0.5,
-                    StrokeDashArray = isTgt ? null : new DoubleCollection { 4, 8 }
+                    StrokeThickness = isTgt ? 1.5 : 1.0,
+                    StrokeDashArray = isTgt ? null : new DoubleCollection { 5, 5 }
                 }, 0, 0);
             }
         }
@@ -200,7 +205,7 @@ public sealed class OverlayWindow : Window
         var stColor   = tgt != null ? Color.FromRgb(0, 255, 157) : Color.FromRgb(80, 80, 80);
         var stTxt = new TextBlock
         {
-            Text       = $"{_engine.Fps:F0} FPS  [{_engine.ProviderName}]  {status}",
+            Text       = $"{_engine.Fps:F0} FPS  [{_engine.ProviderName}] [{_engine.ActiveClassName}]  {status}",
             Foreground = new SolidColorBrush(stColor),
             FontFamily = new FontFamily("Consolas"),
             FontSize   = 10,

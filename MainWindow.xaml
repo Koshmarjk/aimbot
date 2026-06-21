@@ -334,8 +334,17 @@
                                 <local:SliderRow Label="Радиус триггера"    Value="{Binding TbCfg.Tolerance}" Min="1" Max="200" Format="F0" Unit="px"  ValueChanged="OnTbToleranceChanged"/>
                                 <local:SliderRow Label="Задержка мин (мс)"  Value="{Binding TbCfg.DelayMin}"  Min="0" Max="200" Format="F0" Unit="мс"  ValueChanged="OnTbDelayMinChanged"/>
                                 <local:SliderRow Label="Задержка макс (мс)" Value="{Binding TbCfg.DelayMax}"  Min="0" Max="400" Format="F0" Unit="мс"  ValueChanged="OnTbDelayMaxChanged"/>
+								<local:SliderRow Label="Задержка смены цели"
+												 Value="{Binding TbCfg.TargetSwitchDelayMs}"
+												 Min="0" Max="500" Format="F0" Unit="мс"
+												 ValueChanged="OnTbTargetSwitchDelayChanged"/>
 
-                                <CheckBox Content="Только при зажатом аиме"
+								<local:SliderRow Label="Радиус смены цели"
+												 Value="{Binding TbCfg.TargetSwitchRadiusPx}"
+												 Min="1" Max="300" Format="F0" Unit="px"
+												 ValueChanged="OnTbTargetSwitchRadiusChanged"/>
+
+								<CheckBox Content="Только при зажатом аиме"
                                           IsChecked="{Binding TbCfg.AimOnly}"
                                           Foreground="#0099CC" Margin="0,8,0,0"/>
                             </StackPanel>

@@ -43,6 +43,8 @@ public class TriggerbotConfig
     [JsonPropertyName("tolerance")] public double Tolerance { get; set; } = 12.0;
     [JsonPropertyName("delay_min")] public double DelayMin { get; set; } = 0.0;
     [JsonPropertyName("delay_max")] public double DelayMax { get; set; } = 0.0;
+    [JsonPropertyName("target_switch_delay_ms")]  public double TargetSwitchDelayMs  { get; set; } = 130.0;
+    [JsonPropertyName("target_switch_radius_px")] public double TargetSwitchRadiusPx { get; set; } = 10.0;
     [JsonPropertyName("aim_only")]  public bool   AimOnly  { get; set; } = true;
 }
 
@@ -99,6 +101,8 @@ public class PresetConfig
     [JsonPropertyName("tb_tolerance")]        public double TbTolerance        { get; set; } = 50.0;
     [JsonPropertyName("tb_delay_min")]        public double TbDelayMin         { get; set; } = 0.0;
     [JsonPropertyName("tb_delay_max")]        public double TbDelayMax         { get; set; } = 0.0;
+    [JsonPropertyName("tb_target_switch_delay_ms")] public double TbTargetSwitchDelayMs  { get; set; } = 130.0;
+    [JsonPropertyName("tb_target_switch_radius_px")] public double TbTargetSwitchRadiusPx { get; set; } = 10.0;
     [JsonPropertyName("tb_aim_only")]         public bool   TbAimOnly          { get; set; } = true;
     [JsonPropertyName("tb_enabled")]          public bool   TbEnabled          { get; set; } = false;
     [JsonPropertyName("rangefinder_enabled")] public bool   RangefinderEnabled { get; set; } = false;
