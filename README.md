@@ -65,11 +65,7 @@ HachBobAI/
 model.onnx      — YOLOv8 person-only модель
 config.json     — создаётся автоматически
 presets.json    — создаётся автоматически
-sounds/
-  on.mp3
-  off.mp3
-  gui_on.mp3
-  gui_off.mp3
+
 ```
 
 ## Горячие клавиши (по умолчанию)
